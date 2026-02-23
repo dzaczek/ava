@@ -1,0 +1,98 @@
+services:
+
+  # ── AVA core application ──────────────────────────────────────────────────
+  ava:
+    build: .
+    container_name: ava
+    restart: unless-stopped
+    # Port only accessible within Docker network (via Caddy), not from internet
+    expose:
+      - "8000"
+    environment:
+      # Twilio Voice
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}
+      - TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER}
+
+      # Signal – self-hosted, no external API
+      - SIGNAL_CLI_URL=http://signal-cli:8080
+      - SIGNAL_SENDER_NUMBER=${SIGNAL_SENDER_NUMBER}   # bot number registered in signal-cli
+      - SIGNAL_RECIPIENT=${SIGNAL_RECIPIENT}            # your personal Signal number
+
+      # OpenAI
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
+
+      # ElevenLabs TTS (optional – falls back to OpenAI TTS then Twilio Polly)
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      - ELEVENLABS_VOICE_PL=${ELEVENLABS_VOICE_PL:-pNInz6obpgDQGcFmaJgB}
+      - ELEVENLABS_VOICE_EN=${ELEVENLABS_VOICE_EN:-EXAVITQu4vr4xnSDxMaL}
+
+      # Customise AVA's behaviour without code changes
+      - OWNER_CONTEXT=${OWNER_CONTEXT:-}
+
+      # Public HTTPS URL Twilio uses to fetch TTS audio files
+      - PUBLIC_URL=${PUBLIC_URL}
+
+    volumes:
+      - ./data:/data               # place contacts.json here
+      - tts_cache:/tmp/tts_cache
+    depends_on:
+      signal-cli:
+        condition: service_started
+    networks:
+      - ava-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── signal-cli REST API ───────────────────────────────────────────────────
+  # Self-hosted Signal gateway. No Signal API key needed – connects directly
+  # to Signal servers using the registered phone number.
+  # https://github.com/bbernhard/signal-cli-rest-api
+  signal-cli:
+    image: bbernhard/signal-cli-rest-api:latest
+    container_name: ava-signal-cli
+    restart: unless-stopped
+    environment:
+      - MODE=native                        # native mode = lower latency
+      - AUTO_RECEIVE_SCHEDULE=0/1 * * * *  # pull messages every minute (AVA polls every 3 s anyway)
+    volumes:
+      - signal_data:/home/.local/share/signal-cli
+    ports:
+      - "127.0.0.1:8080:8080"  # internal only – never expose to internet
+    networks:
+      - ava-net
+
+  # ── Caddy – automatic HTTPS ───────────────────────────────────────────────
+  # Twilio requires HTTPS webhooks.
+  # Caddy auto-provisions a Let's Encrypt certificate for your domain.
+  caddy:
+    image: caddy:2-alpine
+    container_name: ava-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - ava-net
+    depends_on:
+      - ava
+
+volumes:
+  tts_cache:
+  signal_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  ava-net:
+    driver: bridge

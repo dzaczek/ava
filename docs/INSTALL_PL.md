@@ -1,0 +1,541 @@
+# AVA -- Asystent glosowy AI
+
+## Instrukcja instalacji i konfiguracji
+
+---
+
+### Spis tresci
+
+1. [Wymagania](#1-wymagania)
+2. [Pobranie projektu](#2-pobranie-projektu)
+3. [Konfiguracja zmiennych srodowiskowych](#3-konfiguracja-zmiennych-srodowiskowych)
+4. [Rejestracja numeru Signal](#4-rejestracja-numeru-signal)
+5. [Konfiguracja Twilio](#5-konfiguracja-twilio)
+6. [Konfiguracja domeny i DNS](#6-konfiguracja-domeny-i-dns)
+7. [Uruchomienie](#7-uruchomienie)
+8. [Przekierowanie polaczen z telefonu](#8-przekierowanie-polaczen-z-telefonu)
+9. [Ksiazka kontaktow (opcjonalnie)](#9-ksiazka-kontaktow-opcjonalnie)
+10. [ElevenLabs TTS (opcjonalnie)](#10-elevenlabs-tts-opcjonalnie)
+11. [Personalizacja asystenta](#11-personalizacja-asystenta)
+12. [Weryfikacja dzialania](#12-weryfikacja-dzialania)
+13. [Logi polaczen](#13-logi-polaczen)
+14. [Komendy Signal podczas rozmowy](#14-komendy-signal-podczas-rozmowy)
+15. [Koszty eksploatacji](#15-koszty-eksploatacji)
+16. [Rozwiazywanie problemow](#16-rozwiazywanie-problemow)
+17. [Zabezpieczenia](#17-zabezpieczenia)
+
+---
+
+### 1. Wymagania
+
+Przed rozpoczeciem instalacji upewnij sie, ze dysponujesz:
+
+**Infrastruktura:**
+
+- Serwer VPS lub dedykowany z publicznym adresem IP
+- System operacyjny: Linux (Ubuntu 22.04+, Debian 12+, lub inny z obsluga Dockera)
+- Porty 80 i 443 otwarte i dostepne z internetu
+- Docker Engine (wersja 20.10 lub nowsza)
+- Docker Compose v2 (polecenie `docker compose`)
+- Domena z dostepem do konfiguracji DNS (rekordy A/AAAA)
+
+**Konta i uslugi:**
+
+- Konto Twilio (https://console.twilio.com) z zakupionym numerem telefonu
+- Klucz API OpenAI (https://platform.openai.com)
+- Oddzielny numer telefonu (karta SIM) do rejestracji bota Signal
+- Osobisty numer Signal, na ktory bedziesz otrzymywac powiadomienia
+
+**Opcjonalnie:**
+
+- Konto ElevenLabs (https://elevenlabs.io) -- lepsza jakosc syntezy mowy
+
+---
+
+### 2. Pobranie projektu
+
+Skopiuj pliki projektu na serwer:
+
+```bash
+cd /opt
+git clone <adres-repozytorium> ava
+cd ava
+```
+
+Lub, jesli nie uzywasz git, przeslij pliki przez SCP/SFTP do katalogu `/opt/ava`.
+
+Utworz wymagane katalogi:
+
+```bash
+mkdir -p data/calls
+```
+
+---
+
+### 3. Konfiguracja zmiennych srodowiskowych
+
+Skopiuj plik szablonu i otworz go w edytorze:
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+Ponizej opis kazdej zmiennej:
+
+#### Twilio Voice
+
+| Zmienna | Opis | Przyklad |
+|---------|------|---------|
+| `TWILIO_ACCOUNT_SID` | Identyfikator konta Twilio. Znajdziesz go na stronie glownej konsoli Twilio. | `ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` |
+| `TWILIO_AUTH_TOKEN` | Token autoryzacyjny Twilio. Uzywany rowniez do walidacji podpisow webhookow. | `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` |
+| `TWILIO_PHONE_NUMBER` | Numer telefonu zakupiony w Twilio, na ktory beda przekierowywane polaczenia. | `+48123456789` |
+
+#### Signal
+
+| Zmienna | Opis | Przyklad |
+|---------|------|---------|
+| `SIGNAL_CLI_URL` | Adres wewnetrzny kontenera signal-cli. Nie zmieniaj tej wartosci. | `http://signal-cli:8080` |
+| `SIGNAL_SENDER_NUMBER` | Numer telefonu bota Signal (oddzielna karta SIM, zarejestrowana w kroku 4). | `+48111222333` |
+| `SIGNAL_RECIPIENT` | Twoj osobisty numer Signal, na ktory AVA bedzie wysylac powiadomienia. | `+48999888777` |
+
+#### OpenAI
+
+| Zmienna | Opis | Przyklad |
+|---------|------|---------|
+| `OPENAI_API_KEY` | Klucz API OpenAI. | `sk-proj-...` |
+| `OPENAI_MODEL` | Model GPT do rozmow. Domyslnie `gpt-4o`. Mozesz uzyc `gpt-4o-mini` dla nizszych kosztow. | `gpt-4o` |
+
+#### ElevenLabs TTS (opcjonalnie)
+
+| Zmienna | Opis | Przyklad |
+|---------|------|---------|
+| `ELEVENLABS_API_KEY` | Klucz API ElevenLabs. Pozostaw pusty, aby uzyc OpenAI TTS. | (pusty lub klucz) |
+| `ELEVENLABS_VOICE_PL` | Identyfikator glosu dla jezyka polskiego. | `pNInz6obpgDQGcFmaJgB` |
+| `ELEVENLABS_VOICE_EN` | Identyfikator glosu dla jezyka angielskiego. | `EXAVITQu4vr4xnSDxMaL` |
+
+#### Personalizacja
+
+| Zmienna | Opis |
+|---------|------|
+| `OWNER_CONTEXT` | Informacje o wlascicielu telefonu wstrzykiwane do promptu systemowego. Szczegoly w rozdziale 11. |
+
+#### Infrastruktura
+
+| Zmienna | Opis | Przyklad |
+|---------|------|---------|
+| `PUBLIC_URL` | Publiczny adres HTTPS, pod ktorym serwer jest dostepny z internetu. | `https://ava.twoja-domena.pl` |
+| `DOMAIN` | Nazwa domeny (bez https://). Uzywana przez Caddy do uzyskania certyfikatu SSL. | `ava.twoja-domena.pl` |
+
+---
+
+### 4. Rejestracja numeru Signal
+
+AVA komunikuje sie z Toba przez Signal. Potrzebujesz oddzielnej karty SIM, ktorej numer zarejestrujesz jako "bota".
+
+Uruchom kontener signal-cli:
+
+```bash
+docker compose up signal-cli -d
+```
+
+Poczekaj okolo 15 sekund, az kontener sie uruchomi, a nastepnie zarejestruj numer bota:
+
+```bash
+curl -X POST "http://localhost:8080/v1/register/+48NUMER_BOTA" \
+  -H "Content-Type: application/json" \
+  -d '{"use_voice": false}'
+```
+
+Otrzymasz SMS z kodem weryfikacyjnym na karte SIM bota. Wprowadz go:
+
+```bash
+curl -X POST "http://localhost:8080/v1/register/+48NUMER_BOTA/verify/TWOJ_KOD"
+```
+
+Sprawdz, czy rejestracja przebiegla pomyslnie:
+
+```bash
+curl http://localhost:8080/v1/accounts
+```
+
+Powinienes zobaczyc swoj numer na liscie zarejestrowanych kont.
+
+Wpisz ten numer jako `SIGNAL_SENDER_NUMBER` w pliku `.env`.
+
+---
+
+### 5. Konfiguracja Twilio
+
+#### Zakup numeru telefonu
+
+1. Zaloguj sie do konsoli Twilio: https://console.twilio.com
+2. Przejdz do: Phone Numbers > Manage > Buy a Number
+3. Wybierz numer z odpowiednim prefiksem krajowym (np. +48 dla Polski)
+4. Zakup numer
+
+#### Konfiguracja webhookow
+
+Po uruchomieniu serwera (krok 7) wroc do konsoli Twilio:
+
+1. Przejdz do: Phone Numbers > Manage > Active Numbers
+2. Kliknij na zakupiony numer
+3. W sekcji "Voice & Fax" ustaw:
+
+| Pole | Wartosc |
+|------|---------|
+| A Call Comes In | Webhook, POST, `https://twoja-domena.pl/twilio/incoming` |
+| Call Status Changes | `https://twoja-domena.pl/twilio/status`, POST |
+
+Zamien `twoja-domena.pl` na faktyczny adres Twojego serwera.
+
+---
+
+### 6. Konfiguracja domeny i DNS
+
+Twilio wymaga, aby webhooki byly dostepne przez HTTPS. Caddy (zawarty w projekcie) automatycznie uzyskuje certyfikat Let's Encrypt.
+
+1. W panelu rejestratora domeny dodaj rekord DNS:
+
+| Typ | Nazwa | Wartosc |
+|-----|-------|---------|
+| A | `ava` (lub `@`) | Adres IP Twojego serwera |
+
+2. Poczekaj na propagacje DNS (zazwyczaj kilka minut do kilku godzin)
+
+3. Upewnij sie, ze w pliku `.env` zmienne `DOMAIN` i `PUBLIC_URL` sa poprawne:
+
+```
+DOMAIN=ava.twoja-domena.pl
+PUBLIC_URL=https://ava.twoja-domena.pl
+```
+
+---
+
+### 7. Uruchomienie
+
+Po wykonaniu krokow 3-6 uruchom caly stos:
+
+```bash
+docker compose up -d
+```
+
+Sprawdz status kontenerow:
+
+```bash
+docker compose ps
+```
+
+Powinienes zobaczyc trzy dzialajace kontenery: `ava`, `ava-signal-cli`, `ava-caddy`.
+
+Sledz logi w czasie rzeczywistym:
+
+```bash
+docker compose logs -f ava
+```
+
+Przetestuj, czy serwer odpowiada:
+
+```bash
+curl https://twoja-domena.pl/health
+```
+
+Oczekiwana odpowiedz:
+
+```json
+{"status": "ok"}
+```
+
+---
+
+### 8. Przekierowanie polaczen z telefonu
+
+Przekieruj polaczenia ze swojego telefonu osobistego na numer Twilio.
+
+#### Android
+
+1. Otworz aplikacje Telefon
+2. Menu (trzy kropki) > Ustawienia > Przekierowanie polaczen
+3. Ustaw przekierowanie "Gdy zajety" lub "Gdy odrzucony" na numer Twilio
+
+Alternatywnie, wybierz z klawiatury:
+
+```
+**67*NUMER_TWILIO#
+```
+
+#### iOS
+
+1. Ustawienia > Telefon > Przekierowanie polaczen
+2. Wprowadz numer Twilio
+
+Dokladna sciezka moze sie roznic w zaleznosci od operatora. W razie problemow skontaktuj sie z operatorem i popros o wlaczenie przekierowania warunkowego (CFB/CFNRy).
+
+---
+
+### 9. Ksiazka kontaktow (opcjonalnie)
+
+Aby AVA rozpoznawala dzwoniacych po imieniu, utworz plik `data/contacts.json`.
+
+Format slownikowy (prostszy):
+
+```json
+{
+  "+48123456789": "Jan Kowalski",
+  "+48987654321": "Anna Nowak"
+}
+```
+
+Format tablicowy (wiele numerow na kontakt):
+
+```json
+[
+  {
+    "name": "Jan Kowalski",
+    "phones": ["+48123456789", "+48111222333"]
+  },
+  {
+    "name": "Anna Nowak",
+    "phones": ["+48987654321"]
+  }
+]
+```
+
+Uwagi:
+
+- Numery powinny byc w formacie E.164 (z prefiksem krajowym, np. `+48`)
+- 9-cyfrowe numery bez prefiksu sa automatycznie traktowane jako polskie (+48)
+- Plik jest wczytywany przy starcie kontenera; po zmianach wymagany restart: `docker compose restart ava`
+- Jesli kontakt nie zostanie znaleziony lokalnie, AVA probuje rozpoznac numer przez Twilio CNAM Lookup (koszt ok. $0.01 za zapytanie)
+
+---
+
+### 10. ElevenLabs TTS (opcjonalnie)
+
+Domyslnie AVA uzywa OpenAI TTS (model `tts-1`). Jesli chcesz lepszej jakosci mowy:
+
+1. Zaloz konto na https://elevenlabs.io
+2. Przejdz do: Profile > API Keys i utworz klucz
+3. Przegladaj biblioteke glosow (https://elevenlabs.io/voice-library) i skopiuj identyfikatory wybranych glosow
+4. Wpisz klucz i identyfikatory w pliku `.env`:
+
+```
+ELEVENLABS_API_KEY=twoj_klucz
+ELEVENLABS_VOICE_PL=identyfikator_glosu_pl
+ELEVENLABS_VOICE_EN=identyfikator_glosu_en
+```
+
+Polecane glosy wielojezyczne: Charlotte, Alice, Aria.
+
+Lancuch awaryjny TTS: ElevenLabs > OpenAI TTS > Twilio Polly (wbudowany).
+
+---
+
+### 11. Personalizacja asystenta
+
+AVA dostosowuje swoje zachowanie na podstawie zmiennej `OWNER_CONTEXT` w pliku `.env`. Ten tekst jest wstrzykiwany do promptu systemowego GPT-4o.
+
+Przyklad konfiguracji:
+
+```
+OWNER_CONTEXT=Wlasciciel telefonu to Jan Kowalski. \
+Data urodzenia: 15 marca 1990. \
+Godziny pracy: poniedzialek-piatek, 9:00-17:00 CET. \
+Oczekiwane polaczenia: klienci pytajacy o status projektow, dostawcy potwierdzajacy dostawy, dzial IT zgaszajacy awarie. \
+Awarie IT/infrastruktury: zawsze traktuj jako WYSOKI priorytet i oznacz jako pilne oddzwonienie. \
+Rekruterzy i polaczenia sprzedazowe: grzecznie podziekuj i zakoncz rozmowe. \
+Polityka oddzwaniania: "Wlasciciel oddzwoni tak szybko jak to mozliwe w godzinach pracy."
+```
+
+Dla bardziej zaawansowanych zmian mozesz edytowac zmienna `SYSTEM_PROMPT` w pliku `app/conversation.py`.
+
+---
+
+### 12. Weryfikacja dzialania
+
+Po zakonczeniu konfiguracji wykonaj nastepujace testy:
+
+1. Sprawdz dostepnosc serwera:
+
+```bash
+curl https://twoja-domena.pl/health
+```
+
+2. Sprawdz logi pod katem bledow:
+
+```bash
+docker compose logs ava | tail -50
+docker compose logs ava-signal-cli | tail -20
+docker compose logs caddy | tail -20
+```
+
+3. Wyslij wiadomosc testowa na Signal bota (z numeru SIGNAL_RECIPIENT):
+
+```
+status
+```
+
+Powinienes otrzymac odpowiedz: "No active call at the moment."
+
+4. Zadzwon z innego telefonu na swoj numer osobisty (lub bezposrednio na numer Twilio). AVA powinna odebrac, przywitac sie i poprowadzic rozmowe.
+
+5. Sprawdz, czy po zakonczeniu rozmowy:
+   - Otrzymales podsumowanie na Signal
+   - Plik JSON pojawil sie w katalogu `data/calls/`
+
+---
+
+### 13. Logi polaczen
+
+Po kazdym polaczeniu (rowniez nieodebranym) AVA zapisuje dane do pliku JSON w katalogu `data/calls/`.
+
+Nazwa pliku: `RRRRMMDD_HHMMSS_CALLSID.json`
+
+Przyklad zawartosci:
+
+```json
+{
+  "call_sid": "CA1a2b3c4d...",
+  "caller_number": "+48123456789",
+  "caller_name": "Jan Kowalski",
+  "start_time": "2026-02-23T14:32:15",
+  "end_time": "2026-02-23T14:35:02",
+  "language": "pl-PL",
+  "summary": "Jan Kowalski z firmy Acme zadzwonil w sprawie faktury #456...",
+  "transcript": [
+    {"role": "user", "text": "Dzien dobry, dzwonie w sprawie faktury...", "time": "..."},
+    {"role": "assistant", "text": "Dzien dobry, prosze powiedziec...", "time": "..."}
+  ],
+  "call_meta": {
+    "urgency": "medium",
+    "topic": "invoice dispute",
+    "caller_name_detected": "Jan"
+  }
+}
+```
+
+---
+
+### 14. Komendy Signal podczas rozmowy
+
+Gdy AVA prowadzi rozmowe, mozesz wysylac instrukcje przez Signal:
+
+| Komenda | Efekt |
+|---------|-------|
+| `status` lub `?` | Informuje, czy trwa rozmowa |
+| `end`, `stop`, `koniec`, `zakoncz` | AVA konczy rozmowe |
+| `tell him/her <wiadomosc>` lub `powiedz <wiadomosc>` | AVA przekazuje tresc dzwoniacemu |
+| `ask him/her <pytanie>` lub `zapytaj <pytanie>` | AVA zadaje pytanie dzwoniacemu |
+| Dowolny inny tekst | Przekazywany AVA jako ogolna instrukcja |
+
+AVA potwierdza kazda instrukcje wiadomoscia zwrotna na Signal.
+
+---
+
+### 15. Koszty eksploatacji
+
+Szacunkowe koszty dla typowej 2-minutowej rozmowy:
+
+| Usluga | Stawka | Koszt na rozmowe |
+|--------|--------|-----------------|
+| Twilio Voice | $0.013/min | ok. $0.03 |
+| Twilio STT (enhanced) | $0.02/15 s | ok. $0.16 |
+| OpenAI GPT-4o | ok. $0.01/1k tokenow | ok. $0.005 |
+| ElevenLabs | od $5/miesiac (30 tys. znakow gratis) | -- |
+| Twilio CNAM Lookup | $0.01/zapytanie | $0.01 (tylko nieznane numery) |
+
+Laczny koszt typowej rozmowy: okolo $0.20-0.25.
+
+---
+
+### 16. Rozwiazywanie problemow
+
+#### Twilio nie moze sie polaczyc z webhookiem
+
+```bash
+# Sprawdz, czy serwer odpowiada
+curl -I https://twoja-domena.pl/health
+
+# Sprawdz certyfikat SSL
+docker compose logs caddy | grep -i "certificate"
+
+# Sprawdz, czy porty 80/443 sa otwarte
+ss -tlnp | grep -E ':(80|443)'
+```
+
+#### Brak dzwieku TTS
+
+```bash
+# Sprawdz logi TTS
+docker compose logs ava | grep -i tts
+
+# Upewnij sie, ze PUBLIC_URL jest dostepny z internetu
+curl https://twoja-domena.pl/audio/test.mp3
+# Oczekiwany wynik: 404 (plik nie istnieje, ale endpoint dziala)
+```
+
+#### Signal nie wysyla powiadomien
+
+```bash
+# Sprawdz logi signal-cli
+docker compose logs ava-signal-cli
+
+# Sprawdz zarejestrowane konta
+curl http://localhost:8080/v1/accounts
+
+# Sprawdz logi AVA pod katem bledow Signal
+docker compose logs ava | grep -i signal
+```
+
+#### AVA nie odbiera polaczen
+
+- Upewnij sie, ze webhooki w konsoli Twilio wskazuja na poprawny adres
+- Sprawdz, czy przekierowanie polaczen jest aktywne na Twoim telefonie
+- Sprawdz logi: `docker compose logs -f ava`
+
+#### Ponowne uruchomienie po zmianach
+
+```bash
+# Restart wszystkich uslug
+docker compose restart
+
+# Przebudowanie po zmianach w kodzie
+docker compose up -d --build
+```
+
+---
+
+### 17. Zabezpieczenia
+
+AVA posiada nastepujace mechanizmy bezpieczenstwa:
+
+| Mechanizm | Opis |
+|-----------|------|
+| Walidacja podpisu Twilio | Kazdy request na `/twilio/*` musi posiadac prawidlowy naglowek `X-Twilio-Signature`. Podrobione zapytania sa odrzucane z kodem 403. |
+| Limitowanie zapytan | Maksymalnie 30 zapytan na minute z jednego adresu IP. Przekroczenie limitu skutkuje kodem 429. |
+| Ukryty port aplikacji | Port 8000 nie jest wystawiony na internet. Ruch przechodzi wylacznie przez Caddy (HTTPS na porcie 443). |
+| Signal -- filtrowanie nadawcy | Wiadomosci Signal sa akceptowane wylacznie z numeru `SIGNAL_RECIPIENT`. Pozostale sa ignorowane. |
+| Ochrona plikow audio | Nazwy plikow sa walidowane wyrazeniem regularnym (tylko hash MD5 + .mp3). Ataki path traversal sa blokowane. |
+| Naglowki bezpieczenstwa | Caddy dodaje: HSTS, X-Frame-Options DENY, X-Content-Type-Options nosniff, ukrywa naglowek Server. |
+| Wylaczona dokumentacja API | Endpointy `/docs`, `/redoc`, `/openapi.json` sa wylaczone. |
+
+---
+
+### Architektura systemu
+
+```
+Internet
+  |
+  v
+Caddy (port 443, HTTPS + Let's Encrypt)
+  |
+  v
+AVA (FastAPI, port 8000, siec wewnetrzna Docker)
+  |--- GPT-4o (OpenAI API)
+  |--- ElevenLabs / OpenAI TTS
+  |--- signal-cli (port 8080, siec wewnetrzna Docker)
+  |--- /data/calls/ (logi polaczen, JSON)
+  |--- /data/contacts.json (ksiazka kontaktow)
+```
+
+Ruch z internetu trafia wylacznie na porty 80 (przekierowanie na HTTPS) i 443 (Caddy). Wszystkie pozostale uslugi dzialaja wylacznie w sieci wewnetrznej Docker.

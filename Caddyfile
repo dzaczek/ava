@@ -1,0 +1,14 @@
+{$DOMAIN:localhost} {
+    # ── Security headers ─────────────────────────────────────────────────
+    header {
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "no-referrer"
+        X-XSS-Protection "1; mode=block"
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        -Server
+    }
+
+    # ── Reverse proxy to AVA ─────────────────────────────────────────────
+    reverse_proxy ava:8000
+}
