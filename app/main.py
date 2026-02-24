@@ -119,6 +119,12 @@ _rate_limiter = _RateLimiter(max_requests=30, window_seconds=60)
 async def rate_limit_middleware(request: Request, call_next):
     """Block IPs that exceed 30 requests per minute."""
     client_ip = request.client.host if request.client else "unknown"
+
+    # AVA runs behind Caddy (trusted proxy). Caddy appends the real client IP to X-Forwarded-For.
+    # We take the last IP in the list as the client IP.
+    if xff := request.headers.get("X-Forwarded-For"):
+        client_ip = xff.split(",")[-1].strip()
+
     if not _rate_limiter.is_allowed(client_ip):
         logger.warning(f"Rate limit exceeded for {client_ip}")
         return Response(content="Too Many Requests", status_code=429)
