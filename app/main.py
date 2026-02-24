@@ -503,6 +503,13 @@ async def _send_final_summary(call_sid: str):
     logger.info(f"Final summary sent for {call_sid[:12]}")
 
 
+def _write_json_file(path: Path, data: dict):
+    path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
 async def _save_call_to_file(call_sid: str, summary: str):
     """Persist call data to /data/calls/ as JSON for later review."""
     state = active_calls.get(call_sid)
@@ -527,10 +534,7 @@ async def _save_call_to_file(call_sid: str, summary: str):
     }
 
     try:
-        (CALLS_DIR / filename).write_text(
-            json.dumps(call_data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        await asyncio.to_thread(_write_json_file, CALLS_DIR / filename, call_data)
         logger.info(f"Call data saved: /data/calls/{filename}")
     except Exception as exc:
         logger.error(f"Failed to save call data: {exc}")
