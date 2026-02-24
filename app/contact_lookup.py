@@ -78,7 +78,7 @@ class ContactLookup:
         # 1. Local contacts (free, instant)
         name = self._contacts.get(normalised) or self._contacts.get(phone)
         if name:
-            logger.info(f"Local match for {normalised}: {name}")
+            logger.info("Local contact match found")
             return name
 
         # 2. Twilio Lookup – CNAM (paid, ~$0.01)
@@ -93,7 +93,7 @@ class ContactLookup:
                     if resp.status_code == 200:
                         cnam = resp.json().get("caller_name", {}).get("caller_name")
                         if cnam and cnam.upper() not in ("UNKNOWN", ""):
-                            logger.info(f"CNAM match for {phone}: {cnam}")
+                            logger.info("CNAM match found")
                             return cnam
             except Exception as exc:
                 logger.warning(f"Twilio CNAM lookup failed: {exc}")
@@ -183,5 +183,5 @@ class ContactLookup:
                 logger.info(f"Language detected from prefix {prefix}: {lang} ({locale})")
                 return lang, locale
 
-        logger.info(f"Unknown prefix for {phone}, defaulting to en-US")
+        logger.info("Unknown prefix, defaulting to en-US")
         return "en", "en-US"

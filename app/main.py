@@ -182,7 +182,7 @@ async def incoming_call(
     Greets the caller and starts the conversation loop.
     Sends an immediate Signal notification to the owner.
     """
-    logger.info(f"📞 Incoming call {CallSid} from {From}")
+    logger.info(f"📞 Incoming call {CallSid}")
 
     caller_name = await contacts.lookup(From)
     display     = caller_name or From
@@ -268,7 +268,7 @@ async def process_speech(
     Called after every caller utterance.
     Pulls pending Signal instructions, generates AI response, returns TwiML.
     """
-    logger.info(f"Speech [{call_sid[:12]}]: '{SpeechResult}' lang={LanguageCode}")
+    logger.info(f"Speech [{call_sid[:12]}]: [REDACTED] lang={LanguageCode}")
 
     call_state = active_calls.get(call_sid, {})
     if not SpeechResult:
