@@ -120,30 +120,34 @@ class ConversationManager:
 
         # Inject owner instructions into the user turn as hidden context markers
         if owner_instructions:
+            user_text_parts = [user_text]
             for instr in owner_instructions:
                 if instr == "__END_CALL__":
                     force_end = True
-                    user_text += "\n\nEND_CALL_NOW"
+                    user_text_parts.append("END_CALL_NOW")
                 elif instr.startswith(("RELAY_TO_CALLER:", "ASK_CALLER:")):
-                    user_text += f"\n\n[{instr}]"
+                    user_text_parts.append(f"[{instr}]")
                 else:
-                    user_text += f"\n\n[OWNER_INSTRUCTION: {instr}]"
+                    user_text_parts.append(f"[OWNER_INSTRUCTION: {instr}]")
+            user_text = "\n\n".join(user_text_parts)
 
         history.append({"role": "user", "content": user_text})
 
         # Build the system prompt for this turn
-        system = SYSTEM_PROMPT
+        system_parts = [SYSTEM_PROMPT]
         if language in LANG_HINTS:
-            system += f"\n\n{LANG_HINTS[language]}"
+            system_parts.append(LANG_HINTS[language])
 
         # Provide caller's contact-book name if we have it
         if call_state.get("caller_name"):
-            system += f"\n\nThe caller appears in the owner's contacts as: {call_state['caller_name']}"
+            system_parts.append(f"The caller appears in the owner's contacts as: {call_state['caller_name']}")
 
         # Warn AVA when it's time to wrap up
         n_user_turns = sum(1 for m in history if m["role"] == "user")
         if n_user_turns >= 8:
-            system += "\n\n⚠️ You are at 8+ exchanges. End the call at the very next natural opportunity."
+            system_parts.append("⚠️ You are at 8+ exchanges. End the call at the very next natural opportunity.")
+
+        system = "\n\n".join(system_parts)
 
         try:
             completion = await client.chat.completions.create(
