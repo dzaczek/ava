@@ -58,7 +58,10 @@ CALLS_DIR = Path("/data/calls")
 
 # ── Twilio webhook signature validation ──────────────────────────────────────
 
-_twilio_validator = RequestValidator(os.getenv("TWILIO_AUTH_TOKEN", ""))
+_twilio_token = os.getenv("TWILIO_AUTH_TOKEN")
+if not _twilio_token:
+    raise ValueError("TWILIO_AUTH_TOKEN must be set")
+_twilio_validator = RequestValidator(_twilio_token)
 _public_url = os.getenv("PUBLIC_URL", "")
 
 async def verify_twilio_signature(request: Request):
