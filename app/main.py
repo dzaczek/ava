@@ -30,6 +30,7 @@ from app.conversation import ConversationManager
 from app.owner_channel import OwnerChannel
 from app.contact_lookup import ContactLookup
 from app.tts import TTSProvider
+from app import i18n
 
 logging.basicConfig(
     level=logging.INFO,
@@ -58,7 +59,10 @@ CALLS_DIR = Path("/data/calls")
 
 # ── Twilio webhook signature validation ──────────────────────────────────────
 
-_twilio_validator = RequestValidator(os.getenv("TWILIO_AUTH_TOKEN", ""))
+_twilio_token = os.getenv("TWILIO_AUTH_TOKEN")
+if not _twilio_token:
+    raise ValueError("TWILIO_AUTH_TOKEN must be set")
+_twilio_validator = RequestValidator(_twilio_token)
 _public_url = os.getenv("PUBLIC_URL", "")
 
 async def verify_twilio_signature(request: Request):
@@ -119,6 +123,12 @@ _rate_limiter = _RateLimiter(max_requests=30, window_seconds=60)
 async def rate_limit_middleware(request: Request, call_next):
     """Block IPs that exceed 30 requests per minute."""
     client_ip = request.client.host if request.client else "unknown"
+
+    # AVA runs behind Caddy (trusted proxy). Caddy appends the real client IP to X-Forwarded-For.
+    # We take the last IP in the list as the client IP.
+    if xff := request.headers.get("X-Forwarded-For"):
+        client_ip = xff.split(",")[-1].strip()
+
     if not _rate_limiter.is_allowed(client_ip):
         logger.warning(f"Rate limit exceeded for {client_ip}")
         return Response(content="Too Many Requests", status_code=429)
@@ -182,7 +192,7 @@ async def incoming_call(
     Greets the caller and starts the conversation loop.
     Sends an immediate Signal notification to the owner.
     """
-    logger.info(f"📞 Incoming call {CallSid} from {From}")
+    logger.info(f"📞 Incoming call {CallSid}")
 
     caller_name = await contacts.lookup(From)
     display     = caller_name or From
@@ -216,21 +226,7 @@ async def incoming_call(
     )
 
     # Greet in the caller's detected language
-    greetings = {
-        "pl": "Dzień dobry, tu asystentka właściciela telefonu. W czym mogę pomóc?",
-        "de": "Guten Tag, hier ist die Assistentin des Telefoneigentümers. Wie kann ich Ihnen helfen?",
-        "fr": "Bonjour, je suis l'assistante du propriétaire. Comment puis-je vous aider?",
-        "es": "Buenos días, soy la asistente del propietario. ¿En qué puedo ayudarle?",
-        "cs": "Dobrý den, jsem asistentka majitele telefonu. Jak vám mohu pomoci?",
-        "sk": "Dobrý deň, som asistentka majiteľa telefónu. Ako vám môžem pomôcť?",
-        "it": "Buongiorno, sono l'assistente del proprietario. Come posso aiutarla?",
-        "nl": "Goedendag, ik ben de assistent van de eigenaar. Hoe kan ik u helpen?",
-        "pt": "Bom dia, sou a assistente do proprietário. Como posso ajudar?",
-        "ru": "Добрый день, я ассистент владельца телефона. Чем могу помочь?",
-        "uk": "Добрий день, я асистент власника телефону. Чим можу допомогти?",
-        "en": "Hello, this is the owner's assistant. How can I help you?",
-    }
-    greeting  = greetings.get(lang_code, greetings["en"])
+    greeting  = i18n.GREETINGS.get(lang_code, i18n.GREETINGS["en"])
     audio_url = await tts.generate_and_upload(greeting, lang_code)
 
     response = VoiceResponse()
@@ -268,7 +264,7 @@ async def process_speech(
     Called after every caller utterance.
     Pulls pending Signal instructions, generates AI response, returns TwiML.
     """
-    logger.info(f"Speech [{call_sid[:12]}]: '{SpeechResult}' lang={LanguageCode}")
+    logger.info(f"Speech [{call_sid[:12]}]: [REDACTED] lang={LanguageCode}")
 
     call_state = active_calls.get(call_sid, {})
     if not SpeechResult:
@@ -353,17 +349,6 @@ async def no_input(call_sid: str, background_tasks: BackgroundTasks):
     call_state = active_calls.get(call_sid, {})
     lang_code  = (call_state.get("language_detected") or "en-US").split("-")[0].lower()
 
-    prompts   = {
-        "en": "Is anyone there? Please speak if you'd like to leave a message.",
-        "pl": "Przepraszam, czy jest tam ktoś? Proszę mówić.",
-        "de": "Ist jemand da? Bitte sprechen Sie.",
-    }
-    goodbyes  = {
-        "en": "No response detected. Thank you for calling. Goodbye.",
-        "pl": "Nie słyszę odpowiedzi. Dziękuję za telefon. Do widzenia.",
-        "de": "Keine Antwort. Danke für Ihren Anruf. Auf Wiederhören.",
-    }
-
     response  = VoiceResponse()
     gather    = Gather(
         input="speech",
@@ -372,7 +357,7 @@ async def no_input(call_sid: str, background_tasks: BackgroundTasks):
         speech_timeout="auto",
         language=_twilio_lang(lang_code),
     )
-    prompt    = prompts.get(lang_code, prompts["en"])
+    prompt    = i18n.NO_INPUT_PROMPTS.get(lang_code, i18n.NO_INPUT_PROMPTS["en"])
     audio_url = await tts.generate_and_upload(prompt, lang_code)
     if audio_url:
         gather.play(audio_url)
@@ -380,7 +365,10 @@ async def no_input(call_sid: str, background_tasks: BackgroundTasks):
         gather.say(prompt, language=_twilio_lang(lang_code))
 
     response.append(gather)
-    response.say(goodbyes.get(lang_code, goodbyes["en"]), language=_twilio_lang(lang_code))
+    response.say(
+        i18n.NO_INPUT_GOODBYES.get(lang_code, i18n.NO_INPUT_GOODBYES["en"]),
+        language=_twilio_lang(lang_code)
+    )
     response.hangup()
 
     background_tasks.add_task(_send_final_summary, call_sid)
@@ -414,28 +402,21 @@ async def call_status(
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _twilio_lang(lang_code: str) -> str:
-    return {
-        "pl": "pl-PL", "en": "en-US", "cs": "cs-CZ",
-        "sk": "sk-SK", "de": "de-DE", "fr": "fr-FR",
-        "uk": "uk-UA", "es": "es-ES",
-    }.get(lang_code, "en-US")
+    return i18n.TWILIO_LANG_CODES.get(lang_code, "en-US")
 
 
 def _say(parent, text: str, lang_code: str):
-    lang_str, voice = {
-        "pl": ("pl-PL", "Polly.Ewa"),
-        "en": ("en-US", "Polly.Joanna"),
-        "de": ("de-DE", "Polly.Marlene"),
-    }.get(lang_code, ("en-US", "Polly.Joanna"))
+    lang_str, voice = i18n.POLLY_VOICES.get(
+        lang_code, i18n.POLLY_VOICES["en"]
+    )
     parent.say(text, language=lang_str, voice=voice)
 
 
 async def _clarification_response(call_sid: str, call_state: dict):
     lang_code = (call_state.get("language_detected") or "en-US").split("-")[0].lower()
-    text      = {
-        "en": "I'm sorry, I didn't catch that. Could you please repeat?",
-        "pl": "Przepraszam, nie dosłyszałam. Czy mógłby Pan/Pani powtórzyć?",
-    }.get(lang_code, "I'm sorry, could you repeat that?")
+    text      = i18n.CLARIFICATIONS.get(
+        lang_code, "I'm sorry, could you repeat that?"
+    )
     response  = VoiceResponse()
     gather    = Gather(
         input="speech",
@@ -522,6 +503,13 @@ async def _send_final_summary(call_sid: str):
     logger.info(f"Final summary sent for {call_sid[:12]}")
 
 
+def _write_json_file(path: Path, data: dict):
+    path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
 async def _save_call_to_file(call_sid: str, summary: str):
     """Persist call data to /data/calls/ as JSON for later review."""
     state = active_calls.get(call_sid)
@@ -546,10 +534,7 @@ async def _save_call_to_file(call_sid: str, summary: str):
     }
 
     try:
-        (CALLS_DIR / filename).write_text(
-            json.dumps(call_data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        await asyncio.to_thread(_write_json_file, CALLS_DIR / filename, call_data)
         logger.info(f"Call data saved: /data/calls/{filename}")
     except Exception as exc:
         logger.error(f"Failed to save call data: {exc}")

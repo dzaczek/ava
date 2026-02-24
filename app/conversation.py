@@ -17,6 +17,7 @@ import logging
 from typing import Optional
 
 from openai import AsyncOpenAI
+from app import i18n
 
 logger = logging.getLogger(__name__)
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -79,19 +80,6 @@ Set end_call=true when:
 - Exchange count > 9
 """
 
-# Language reinforcement appended to system prompt after first detection
-LANG_HINTS = {
-    "pl": "Respond ONLY in Polish.",
-    "en": "Respond ONLY in English.",
-    "de": "Respond ONLY in German.",
-    "cs": "Respond ONLY in Czech.",
-    "sk": "Respond ONLY in Slovak.",
-    "fr": "Respond ONLY in French.",
-    "uk": "Respond ONLY in Ukrainian.",
-    "es": "Respond ONLY in Spanish.",
-}
-
-
 class ConversationManager:
 
     def __init__(self):
@@ -135,8 +123,8 @@ class ConversationManager:
 
         # Build the system prompt for this turn
         system_parts = [SYSTEM_PROMPT]
-        if language in LANG_HINTS:
-            system_parts.append(LANG_HINTS[language])
+        if language in i18n.LANG_HINTS:
+            system_parts.append(i18n.LANG_HINTS[language])
 
         # Provide caller's contact-book name if we have it
         if call_state.get("caller_name"):
@@ -195,12 +183,10 @@ class ConversationManager:
 
         except Exception as exc:
             logger.error(f"OpenAI error: {exc}")
-            fallback = {
-                "en": "I'm sorry, I'm experiencing a technical issue. Please try again in a moment.",
-                "pl": "Przepraszam, mam chwilowy problem techniczny. Proszę spróbować za chwilę.",
-            }
             return {
-                "text": fallback.get(language, fallback["en"]),
+                "text": i18n.ERROR_FALLBACKS.get(
+                    language, i18n.ERROR_FALLBACKS["en"]
+                ),
                 "end_call": True, "urgency": "low",
                 "topic": "", "caller_name_detected": "",
             }
