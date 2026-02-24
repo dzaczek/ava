@@ -23,7 +23,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-CONTACTS_FILE = Path("/data/contacts.json")
+CONTACTS_FILE = Path(os.getenv("CONTACTS_FILE_PATH", "/data/contacts.json"))
 
 
 class ContactLookup:
