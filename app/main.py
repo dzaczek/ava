@@ -30,6 +30,7 @@ from app.conversation import ConversationManager
 from app.owner_channel import OwnerChannel
 from app.contact_lookup import ContactLookup
 from app.tts import TTSProvider
+from app import i18n
 
 logging.basicConfig(
     level=logging.INFO,
@@ -216,21 +217,7 @@ async def incoming_call(
     )
 
     # Greet in the caller's detected language
-    greetings = {
-        "pl": "Dzień dobry, tu asystentka właściciela telefonu. W czym mogę pomóc?",
-        "de": "Guten Tag, hier ist die Assistentin des Telefoneigentümers. Wie kann ich Ihnen helfen?",
-        "fr": "Bonjour, je suis l'assistante du propriétaire. Comment puis-je vous aider?",
-        "es": "Buenos días, soy la asistente del propietario. ¿En qué puedo ayudarle?",
-        "cs": "Dobrý den, jsem asistentka majitele telefonu. Jak vám mohu pomoci?",
-        "sk": "Dobrý deň, som asistentka majiteľa telefónu. Ako vám môžem pomôcť?",
-        "it": "Buongiorno, sono l'assistente del proprietario. Come posso aiutarla?",
-        "nl": "Goedendag, ik ben de assistent van de eigenaar. Hoe kan ik u helpen?",
-        "pt": "Bom dia, sou a assistente do proprietário. Como posso ajudar?",
-        "ru": "Добрый день, я ассистент владельца телефона. Чем могу помочь?",
-        "uk": "Добрий день, я асистент власника телефону. Чим можу допомогти?",
-        "en": "Hello, this is the owner's assistant. How can I help you?",
-    }
-    greeting  = greetings.get(lang_code, greetings["en"])
+    greeting  = i18n.GREETINGS.get(lang_code, i18n.GREETINGS["en"])
     audio_url = await tts.generate_and_upload(greeting, lang_code)
 
     response = VoiceResponse()
@@ -353,17 +340,6 @@ async def no_input(call_sid: str, background_tasks: BackgroundTasks):
     call_state = active_calls.get(call_sid, {})
     lang_code  = (call_state.get("language_detected") or "en-US").split("-")[0].lower()
 
-    prompts   = {
-        "en": "Is anyone there? Please speak if you'd like to leave a message.",
-        "pl": "Przepraszam, czy jest tam ktoś? Proszę mówić.",
-        "de": "Ist jemand da? Bitte sprechen Sie.",
-    }
-    goodbyes  = {
-        "en": "No response detected. Thank you for calling. Goodbye.",
-        "pl": "Nie słyszę odpowiedzi. Dziękuję za telefon. Do widzenia.",
-        "de": "Keine Antwort. Danke für Ihren Anruf. Auf Wiederhören.",
-    }
-
     response  = VoiceResponse()
     gather    = Gather(
         input="speech",
@@ -372,7 +348,7 @@ async def no_input(call_sid: str, background_tasks: BackgroundTasks):
         speech_timeout="auto",
         language=_twilio_lang(lang_code),
     )
-    prompt    = prompts.get(lang_code, prompts["en"])
+    prompt    = i18n.NO_INPUT_PROMPTS.get(lang_code, i18n.NO_INPUT_PROMPTS["en"])
     audio_url = await tts.generate_and_upload(prompt, lang_code)
     if audio_url:
         gather.play(audio_url)
@@ -380,7 +356,10 @@ async def no_input(call_sid: str, background_tasks: BackgroundTasks):
         gather.say(prompt, language=_twilio_lang(lang_code))
 
     response.append(gather)
-    response.say(goodbyes.get(lang_code, goodbyes["en"]), language=_twilio_lang(lang_code))
+    response.say(
+        i18n.NO_INPUT_GOODBYES.get(lang_code, i18n.NO_INPUT_GOODBYES["en"]),
+        language=_twilio_lang(lang_code)
+    )
     response.hangup()
 
     background_tasks.add_task(_send_final_summary, call_sid)
@@ -414,28 +393,21 @@ async def call_status(
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _twilio_lang(lang_code: str) -> str:
-    return {
-        "pl": "pl-PL", "en": "en-US", "cs": "cs-CZ",
-        "sk": "sk-SK", "de": "de-DE", "fr": "fr-FR",
-        "uk": "uk-UA", "es": "es-ES",
-    }.get(lang_code, "en-US")
+    return i18n.TWILIO_LANG_CODES.get(lang_code, "en-US")
 
 
 def _say(parent, text: str, lang_code: str):
-    lang_str, voice = {
-        "pl": ("pl-PL", "Polly.Ewa"),
-        "en": ("en-US", "Polly.Joanna"),
-        "de": ("de-DE", "Polly.Marlene"),
-    }.get(lang_code, ("en-US", "Polly.Joanna"))
+    lang_str, voice = i18n.POLLY_VOICES.get(
+        lang_code, i18n.POLLY_VOICES["en"]
+    )
     parent.say(text, language=lang_str, voice=voice)
 
 
 async def _clarification_response(call_sid: str, call_state: dict):
     lang_code = (call_state.get("language_detected") or "en-US").split("-")[0].lower()
-    text      = {
-        "en": "I'm sorry, I didn't catch that. Could you please repeat?",
-        "pl": "Przepraszam, nie dosłyszałam. Czy mógłby Pan/Pani powtórzyć?",
-    }.get(lang_code, "I'm sorry, could you repeat that?")
+    text      = i18n.CLARIFICATIONS.get(
+        lang_code, "I'm sorry, could you repeat that?"
+    )
     response  = VoiceResponse()
     gather    = Gather(
         input="speech",

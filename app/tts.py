@@ -19,17 +19,9 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
+from app import i18n
 
 logger = logging.getLogger(__name__)
-
-# ElevenLabs voice IDs – find yours at https://elevenlabs.io/voice-library
-# Recommended multilingual voices: "Charlotte", "Alice", "Aria"
-ELEVENLABS_VOICES: dict[str, str] = {
-    "pl": os.getenv("ELEVENLABS_VOICE_PL", "pNInz6obpgDQGcFmaJgB"),
-    "en": os.getenv("ELEVENLABS_VOICE_EN", "EXAVITQu4vr4xnSDxMaL"),
-    "de": os.getenv("ELEVENLABS_VOICE_DE", "pNInz6obpgDQGcFmaJgB"),
-}
-ELEVENLABS_DEFAULT = os.getenv("ELEVENLABS_VOICE_DEFAULT", "pNInz6obpgDQGcFmaJgB")
 
 AUDIO_DIR  = Path("/tmp/tts_cache")
 AUDIO_DIR.mkdir(exist_ok=True)
@@ -70,7 +62,9 @@ class TTSProvider:
     # ── ElevenLabs ────────────────────────────────────────────────────────────
 
     async def _elevenlabs(self, text: str, language: str) -> Optional[bytes]:
-        voice_id = ELEVENLABS_VOICES.get(language, ELEVENLABS_DEFAULT)
+        voice_id = i18n.ELEVENLABS_VOICES.get(
+            language, i18n.ELEVENLABS_DEFAULT
+        )
 
         try:
             async with httpx.AsyncClient(timeout=15) as client:
