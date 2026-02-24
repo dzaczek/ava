@@ -14,6 +14,7 @@ signal-cli-rest-api docs: https://github.com/bbernhard/signal-cli-rest-api
 import asyncio
 import logging
 import os
+from collections import deque
 from typing import Optional
 
 import httpx
@@ -33,7 +34,7 @@ class OwnerChannel:
         self._active_call:  Optional[str] = None
 
         # Tracks message timestamps already processed (avoids duplicates)
-        self._seen_timestamps: set[int] = set()
+        self._seen_timestamps: deque[int] = deque(maxlen=500)
 
     # ── Outbound ──────────────────────────────────────────────────────────────
 
@@ -109,11 +110,7 @@ class OwnerChannel:
             ts = envelope.get("timestamp", 0)
             if ts in self._seen_timestamps:
                 continue
-            self._seen_timestamps.add(ts)
-
-            # Prevent memory leak – keep only the last 250 timestamps
-            if len(self._seen_timestamps) > 500:
-                self._seen_timestamps = set(list(self._seen_timestamps)[-250:])
+            self._seen_timestamps.append(ts)
 
             # Only accept messages from the configured owner number
             source = envelope.get("source") or envelope.get("sourceNumber", "")
