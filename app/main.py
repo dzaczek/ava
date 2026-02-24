@@ -14,9 +14,12 @@ import collections
 import json
 import logging
 import os
+import platform
 import re
+import resource
+import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urljoin
@@ -56,6 +59,10 @@ active_calls: dict[str, dict] = {}
 URGENCY_EMOJI = {"low": "🟢", "medium": "🟡", "high": "🔴"}
 AUDIO_DIR = Path("/tmp/tts_cache")
 CALLS_DIR = Path("/data/calls")
+
+# ── Diagnostics tracking ─────────────────────────────────────────────────────
+_start_time = time.monotonic()
+_call_count = 0
 
 # ── Twilio webhook signature validation ──────────────────────────────────────
 
@@ -141,6 +148,7 @@ async def rate_limit_middleware(request: Request, call_next):
 @app.on_event("startup")
 async def startup():
     """Start the Signal inbound polling loop as a background task."""
+    _register_slash_commands()
     asyncio.create_task(owner.start_polling(interval=3.0))
     asyncio.create_task(_rate_limiter_cleanup_loop())
     logger.info("AVA started – Signal polling active")
@@ -151,6 +159,162 @@ async def _rate_limiter_cleanup_loop():
     while True:
         await asyncio.sleep(300)
         _rate_limiter.cleanup()
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    """Close persistent HTTP clients on shutdown."""
+    await tts._client.aclose()
+    await owner._client.aclose()
+    await contacts._client.aclose()
+
+
+# ── Slash commands (Signal diagnostics) ───────────────────────────────────────
+
+def _format_uptime() -> str:
+    """Format uptime as 'Xd Yh Zm'."""
+    elapsed = int(time.monotonic() - _start_time)
+    days, rem = divmod(elapsed, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    parts.append(f"{minutes}m")
+    return " ".join(parts)
+
+
+def _register_slash_commands():
+    """Register all diagnostic slash commands on the owner channel."""
+
+    async def _cmd_ping(_args: str) -> str:
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        return f"pong\n{now}"
+
+    async def _cmd_status(_args: str) -> str:
+        lines = [
+            "AVA Status",
+            "━━━━━━━━━━━━",
+            f"Uptime: {_format_uptime()}",
+            f"Active calls: {len(active_calls)}",
+        ]
+        for sid, state in active_calls.items():
+            caller = state.get("caller_name") or state.get("from", "?")
+            start = state.get("start_time", "")
+            elapsed = ""
+            if start:
+                try:
+                    dt = datetime.fromisoformat(start)
+                    secs = int((datetime.utcnow() - dt).total_seconds())
+                    elapsed = f" — {secs // 60}m {secs % 60}s"
+                except ValueError:
+                    pass
+            lines.append(f"  {sid[:8]}... from {caller}{elapsed}")
+        lines.append(f"Signal: connected")
+        if _public_url:
+            lines.append(f"Public URL: {_public_url}")
+        return "\n".join(lines)
+
+    async def _cmd_stats(_args: str) -> str:
+        # TTS cache stats
+        tts_files = list(AUDIO_DIR.glob("*.mp3")) if AUDIO_DIR.exists() else []
+        tts_count = len(tts_files)
+        tts_size_mb = sum(f.stat().st_size for f in tts_files) / (1024 * 1024)
+
+        # Saved call records
+        call_files = list(CALLS_DIR.glob("*.json")) if CALLS_DIR.exists() else []
+
+        # Memory RSS (in MB)
+        try:
+            rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            # macOS returns bytes, Linux returns KB
+            if sys.platform == "darwin":
+                rss_mb = rss_kb / (1024 * 1024)
+            else:
+                rss_mb = rss_kb / 1024
+        except Exception:
+            rss_mb = 0.0
+
+        return "\n".join([
+            "AVA Statistics",
+            "━━━━━━━━━━━━━━━━",
+            f"Uptime: {_format_uptime()}",
+            f"Total calls handled: {_call_count}",
+            f"Saved call records: {len(call_files)}",
+            f"TTS cache: {tts_count} files ({tts_size_mb:.1f} MB)",
+            f"Memory (RSS): {rss_mb:.1f} MB",
+            f"Python: {platform.python_version()}",
+        ])
+
+    async def _cmd_calls(_args: str) -> str:
+        if not CALLS_DIR.exists():
+            return "No call records found."
+        files = sorted(CALLS_DIR.glob("*.json"), reverse=True)[:5]
+        if not files:
+            return "No call records found."
+
+        lines = ["Recent calls (last 5)", "━━━━━━━━━━━━━━━━━━━━━"]
+        for i, f in enumerate(files, 1):
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                caller = data.get("caller_name") or data.get("caller_number", "?")
+                number = data.get("caller_number", "")
+                topic = data.get("call_meta", {}).get("topic") or data.get("summary", "")[:50]
+                start = data.get("start_time", "?")
+                try:
+                    dt = datetime.fromisoformat(start)
+                    start = dt.strftime("%Y-%m-%d %H:%M")
+                except ValueError:
+                    pass
+                urgency = data.get("call_meta", {}).get("urgency", "low")
+                emoji = URGENCY_EMOJI.get(urgency, "")
+                lines.append(f"{i}. {start} — {caller} ({number})")
+                if topic:
+                    lines.append(f"   {emoji} Topic: {topic}")
+            except Exception:
+                lines.append(f"{i}. (error reading {f.name})")
+        return "\n".join(lines)
+
+    _restart_pending: dict[str, float] = {}
+
+    async def _cmd_restart(args: str) -> str:
+        if args.strip().lower() == "confirm":
+            if _restart_pending.get("ts", 0) > time.monotonic() - 30:
+                _restart_pending.clear()
+                # Schedule exit after response is sent
+                asyncio.get_event_loop().call_later(1.0, lambda: sys.exit(0))
+                return "Restarting AVA..."
+            return "No pending restart request. Send /restart first."
+
+        _restart_pending["ts"] = time.monotonic()
+        return "Are you sure? Send `/restart confirm` within 30s to confirm."
+
+    async def _cmd_help(_args: str) -> str:
+        return "\n".join([
+            "AVA Signal Commands",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "/ping     — alive check",
+            "/status   — system status & active calls",
+            "/stats    — statistics (calls, memory, cache)",
+            "/calls    — recent call history",
+            "/restart  — restart AVA process",
+            "/help     — this message",
+            "",
+            "Call commands (no / prefix):",
+            "status    — is a call active?",
+            "end       — end current call",
+            "tell <msg> — relay message to caller",
+            "ask <msg>  — ask caller a question",
+        ])
+
+    owner.register_slash("/ping", _cmd_ping)
+    owner.register_slash("/status", _cmd_status)
+    owner.register_slash("/stats", _cmd_stats)
+    owner.register_slash("/calls", _cmd_calls)
+    owner.register_slash("/restart", _cmd_restart)
+    owner.register_slash("/help", _cmd_help)
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
@@ -192,6 +356,8 @@ async def incoming_call(
     Greets the caller and starts the conversation loop.
     Sends an immediate Signal notification to the owner.
     """
+    global _call_count
+    _call_count += 1
     logger.info(f"📞 Incoming call {CallSid}")
 
     caller_name = await contacts.lookup(From)
@@ -288,13 +454,25 @@ async def process_speech(
     if owner_instructions:
         logger.info(f"Injecting {len(owner_instructions)} owner instruction(s)")
 
-    ai = await conversation.respond(
+    # Stream GPT-4o and pipeline TTS on first sentence for lower latency
+    sentences = []
+    ai = {"text": "", "end_call": False, "urgency": "low", "topic": "", "caller_name_detected": ""}
+    first_audio_url = None
+
+    async for part in conversation.respond_streaming(
         call_sid=call_sid,
         user_text=SpeechResult,
         language=lang_code,
         call_state=call_state,
         owner_instructions=owner_instructions,
-    )
+    ):
+        if part["type"] == "sentence":
+            sentences.append(part["text"])
+            # Start TTS on the FIRST sentence immediately while GPT-4o continues
+            if first_audio_url is None:
+                first_audio_url = await tts.generate_and_upload(part["text"], lang_code)
+        elif part["type"] == "done":
+            ai = part
 
     if call_sid in active_calls:
         active_calls[call_sid]["transcript"].append({
@@ -310,13 +488,20 @@ async def process_speech(
     if n_turns > 0 and n_turns % 4 == 0:
         background_tasks.add_task(_send_live_update, call_sid, ai)
 
+    # Generate TTS for remaining sentences (first one is already done)
+    audio_urls = [first_audio_url] if first_audio_url else []
+    for sentence in sentences[1:]:
+        url = await tts.generate_and_upload(sentence, lang_code)
+        if url:
+            audio_urls.append(url)
+
     # Build TwiML
-    response  = VoiceResponse()
-    audio_url = await tts.generate_and_upload(ai["text"], lang_code)
+    response = VoiceResponse()
 
     if ai.get("end_call"):
-        if audio_url:
-            response.play(audio_url)
+        if audio_urls:
+            for url in audio_urls:
+                response.play(url)
         else:
             _say(response, ai["text"], lang_code)
         response.hangup()
@@ -331,8 +516,9 @@ async def process_speech(
             enhanced=True,
             speech_model="phone_call",
         )
-        if audio_url:
-            gather.play(audio_url)
+        if audio_urls:
+            for url in audio_urls:
+                gather.play(url)
         else:
             _say(gather, ai["text"], lang_code)
         response.append(gather)
@@ -391,12 +577,20 @@ async def call_status(
         state = active_calls.get(CallSid, {})
         if state and not state.get("summary_sent"):
             background_tasks.add_task(_send_final_summary, CallSid)
-        await asyncio.sleep(90)
-        active_calls.pop(CallSid, None)
-        owner.clear_active_call(CallSid)
-        conversation.cleanup(CallSid)
+        # Schedule cleanup in a background coroutine so we don't block Twilio's callback
+        asyncio.create_task(_delayed_cleanup(CallSid))
 
     return Response(content="", status_code=204)
+
+
+# ── Cleanup ──────────────────────────────────────────────────────────
+
+async def _delayed_cleanup(call_sid: str):
+    """Clean up call state after a delay, without blocking the HTTP handler."""
+    await asyncio.sleep(90)
+    active_calls.pop(call_sid, None)
+    owner.clear_active_call(call_sid)
+    conversation.cleanup(call_sid)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

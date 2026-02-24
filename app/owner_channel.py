@@ -15,9 +15,12 @@ import asyncio
 import logging
 import os
 from collections import deque
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 import httpx
+
+# Slash command handler: receives args string, returns reply text
+SlashHandler = Callable[[str], Awaitable[str]]
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +39,35 @@ class OwnerChannel:
         # Tracks message timestamps already processed (avoids duplicates)
         self._seen_timestamps: deque[int] = deque(maxlen=500)
 
+        # Persistent HTTP client for Signal API
+        self._client = httpx.AsyncClient(timeout=10)
+
+        # Slash command registry (populated via register_slash)
+        self._slash_commands: dict[str, SlashHandler] = {}
+
+    # ── Slash commands ────────────────────────────────────────────────────────
+
+    def register_slash(self, name: str, handler: SlashHandler):
+        """Register a slash command handler. Name should include the '/' prefix."""
+        self._slash_commands[name.lower()] = handler
+        logger.info(f"Registered slash command: {name}")
+
+    async def _handle_slash(self, text: str) -> str:
+        """Route a /command to its registered handler."""
+        parts = text.strip().split(maxsplit=1)
+        cmd = parts[0].lower()
+        args = parts[1] if len(parts) > 1 else ""
+
+        handler = self._slash_commands.get(cmd)
+        if handler:
+            try:
+                return await handler(args)
+            except Exception as exc:
+                logger.exception(f"Slash command {cmd} failed")
+                return f"Error in {cmd}: {exc}"
+
+        return f"Unknown command: {cmd}\nType /help for available commands."
+
     # ── Outbound ──────────────────────────────────────────────────────────────
 
     async def notify(self, message: str, call_sid: Optional[str] = None) -> bool:
@@ -48,19 +80,18 @@ class OwnerChannel:
             return False
 
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.post(
-                    f"{self.signal_url}/v2/send",
-                    json={
-                        "message":    message,
-                        "number":     self.signal_sender,
-                        "recipients": [self.signal_owner],
-                    },
-                )
-                if resp.status_code == 201:
-                    return True
-                logger.error(f"Signal send {resp.status_code}: {resp.text[:200]}")
-                return False
+            resp = await self._client.post(
+                f"{self.signal_url}/v2/send",
+                json={
+                    "message":    message,
+                    "number":     self.signal_sender,
+                    "recipients": [self.signal_owner],
+                },
+            )
+            if resp.status_code == 201:
+                return True
+            logger.error(f"Signal send {resp.status_code}: {resp.text[:200]}")
+            return False
         except Exception as exc:
             logger.error(f"Signal send failed: {exc}")
             return False
@@ -86,10 +117,9 @@ class OwnerChannel:
         if not self.signal_sender:
             return
 
-        async with httpx.AsyncClient(timeout=8) as client:
-            resp = await client.get(
-                f"{self.signal_url}/v1/receive/{self.signal_sender}"
-            )
+        resp = await self._client.get(
+            f"{self.signal_url}/v1/receive/{self.signal_sender}"
+        )
 
         if resp.status_code != 200:
             return
@@ -126,8 +156,11 @@ class OwnerChannel:
                 continue
 
             logger.info(f"Signal inbound from owner ({len(text)} chars)")
-            reply = self.receive_instruction(text)
-            await self.notify(reply)  # confirm the instruction back to owner
+            if text.startswith("/"):
+                reply = await self._handle_slash(text)
+            else:
+                reply = self.receive_instruction(text)
+            await self.notify(reply)
 
     # ── Instruction parsing ───────────────────────────────────────────────────
 
