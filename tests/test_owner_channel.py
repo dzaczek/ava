@@ -14,28 +14,31 @@ class TestOwnerChannel(unittest.TestCase):
         Verify that _seen_timestamps uses a deque with maxlen=500,
         correctly pruning old timestamps and keeping the most recent ones.
         """
-        channel = OwnerChannel()
-        channel.signal_sender = "+1234567890"
-
-        # Create 600 messages with increasing timestamps
-        messages = []
-        for i in range(600):
-            messages.append({
-                "envelope": {
-                    "timestamp": 1000 + i,
-                    "dataMessage": {"message": "hello"},
-                    "source": "+1987654321"
-                }
-            })
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = messages
-
+        # Patch AsyncClient BEFORE instantiating OwnerChannel
         with patch("app.owner_channel.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
-            mock_client.get.return_value = mock_resp
+            channel = OwnerChannel()
+            channel.signal_sender = "+1234567890"
+
+            # Create 600 messages with increasing timestamps
+            messages = []
+            for i in range(600):
+                messages.append({
+                    "envelope": {
+                        "timestamp": 1000 + i,
+                        "dataMessage": {"message": "hello"},
+                        "source": "+1987654321"
+                    }
+                })
+
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = messages
+
+            # Setup the mock client instance returned by OwnerChannel's __init__
+            mock_client_instance = mock_client_cls.return_value
+
+            # Mock the .get method used in _poll_once
+            mock_client_instance.get = AsyncMock(return_value=mock_resp)
 
             asyncio.run(channel._poll_once())
 

@@ -12,6 +12,7 @@ Audio files are cached on disk keyed by MD5(lang:text) to avoid
 redundant API calls for repeated phrases (greetings, clarifications, etc.).
 """
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -54,7 +55,7 @@ class TTSProvider:
         )
 
         if audio:
-            path.write_bytes(audio)
+            await asyncio.to_thread(path.write_bytes, audio)
             return f"{PUBLIC_URL}/audio/{key}.mp3"
 
         return None  # caller will fall back to Twilio <Say>
