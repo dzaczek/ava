@@ -11,6 +11,8 @@ Call flow:
 
 import asyncio
 import collections
+import aiofiles
+import aiofiles.os
 import json
 import logging
 import os
@@ -697,20 +699,11 @@ async def _send_final_summary(call_sid: str):
     logger.info(f"Final summary sent for {call_sid[:12]}")
 
 
-def _write_json_file(path: Path, data: dict):
-    path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-
 async def _save_call_to_file(call_sid: str, summary: str):
     """Persist call data to /data/calls/ as JSON for later review."""
     state = active_calls.get(call_sid)
     if not state:
         return
-
-    CALLS_DIR.mkdir(parents=True, exist_ok=True)
 
     date_prefix = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     filename = f"{date_prefix}_{call_sid[:8]}.json"
@@ -728,7 +721,9 @@ async def _save_call_to_file(call_sid: str, summary: str):
     }
 
     try:
-        await asyncio.to_thread(_write_json_file, CALLS_DIR / filename, call_data)
+        await aiofiles.os.makedirs(CALLS_DIR, exist_ok=True)
+        async with aiofiles.open(CALLS_DIR / filename, mode="w", encoding="utf-8") as f:
+            await f.write(json.dumps(call_data, ensure_ascii=False, indent=2))
         logger.info(f"Call data saved: /data/calls/{filename}")
     except Exception as exc:
         logger.error(f"Failed to save call data: {exc}")
