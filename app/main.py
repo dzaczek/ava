@@ -133,8 +133,10 @@ async def rate_limit_middleware(request: Request, call_next):
 
     # AVA runs behind Caddy (trusted proxy). Caddy appends the real client IP to X-Forwarded-For.
     # We take the last IP in the list as the client IP.
-    if xff := request.headers.get("X-Forwarded-For"):
-        client_ip = xff.split(",")[-1].strip()
+    # We use getlist() to combine all X-Forwarded-For headers, preventing spoofing via multiple headers.
+    xff_list = request.headers.getlist("X-Forwarded-For")
+    if xff_list:
+        client_ip = ",".join(xff_list).split(",")[-1].strip()
 
     if not _rate_limiter.is_allowed(client_ip):
         logger.warning(f"Rate limit exceeded for {client_ip}")
