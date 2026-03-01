@@ -112,21 +112,31 @@ Ponizej opis kazdej zmiennej:
 | Zmienna | Opis | Przyklad |
 |---------|------|---------|
 | `ELEVENLABS_API_KEY` | Klucz API ElevenLabs. Pozostaw pusty, aby uzyc OpenAI TTS. | (pusty lub klucz) |
-| `ELEVENLABS_VOICE_PL` | Identyfikator glosu dla jezyka polskiego. | `pNInz6obpgDQGcFmaJgB` |
-| `ELEVENLABS_VOICE_EN` | Identyfikator glosu dla jezyka angielskiego. | `EXAVITQu4vr4xnSDxMaL` |
+| `ELEVENLABS_VOICE_ID` | Wielojezyczny identyfikator glosu (jeden dla wszystkich jezykow). | `WAhoMTNdLdMoq1j3wf3I` |
+| `ELEVENLABS_MODEL` | Model ElevenLabs. `eleven_multilingual_v2` (najlepsza jakosc) lub `eleven_turbo_v2_5` (szybszy). | `eleven_multilingual_v2` |
+| `OPENAI_TTS_VOICE` | Zapasowy glos OpenAI TTS: alloy, echo, fable, onyx, nova, shimmer. | `nova` |
 
 #### Personalizacja
 
 | Zmienna | Opis |
 |---------|------|
-| `OWNER_CONTEXT` | Informacje o wlascicielu telefonu wstrzykiwane do promptu systemowego. Szczegoly w rozdziale 11. |
+| `OWNER_CONTEXT` | Persona asystentki + informacje o wlascicielu. Wstrzykiwane do promptu GPT-4o. Musi byc jedna linia (bez eneterow). Prywatna konfiguracja — zostaje w `.env`, nie trafia na git. Szczegoly w rozdziale 12. |
+
+#### Jezyk
+
+| Zmienna | Opis | Przyklad |
+|---------|------|---------|
+| `DEFAULT_STT_LANG` | Domyslny jezyk STT Twilio przed detekcja z prefiksu. | `en-US` |
+| `SIGNAL_LANG` | Jezyk powiadomien Signal i podsumowania (`en` lub `pl`). | `pl` |
 
 #### Infrastruktura
 
 | Zmienna | Opis | Przyklad |
 |---------|------|---------|
+| `COMPOSE_PROFILES` | Profil Docker Compose okreslajacy sposob dostepu z internetu. `caddy` = Caddy + Let's Encrypt, `tunnel` = Cloudflare Tunnel. | `caddy` |
 | `PUBLIC_URL` | Publiczny adres HTTPS, pod ktorym serwer jest dostepny z internetu. | `https://ava.twoja-domena.pl` |
-| `DOMAIN` | Nazwa domeny (bez https://). Uzywana przez Caddy do uzyskania certyfikatu SSL. | `ava.twoja-domena.pl` |
+| `DOMAIN` | Nazwa domeny (bez https://). Uzywana przez Caddy do uzyskania certyfikatu SSL. Wymagana tylko przy profilu `caddy`. | `ava.twoja-domena.pl` |
+| `CLOUDFLARE_TUNNEL_TOKEN` | Token tunelu z panelu Cloudflare Zero Trust. Wymagany tylko przy profilu `tunnel`. | `eyJhIjo...` |
 
 ---
 
@@ -238,10 +248,23 @@ W ustawieniach tunelu dodaj trase (Public Hostname):
 
 Cloudflare automatycznie zapewni certyfikat SSL i bedzie proxy'owal ruch do kontenera AVA.
 
+#### Wybor profilu
+
+W pliku `.env` ustaw profil na `tunnel`:
+
+```env
+COMPOSE_PROFILES=tunnel
+```
+
+Nastepnie uruchom normalnie -- wystartuje tylko kontener `cloudflared` (Caddy nie zostanie uruchomiony):
+
+```bash
+docker compose up -d
+```
+
 #### Uwagi
 
-- Kontener `cloudflared` jest juz zdefiniowany w `docker-compose.yml` i uruchomi sie automatycznie z `docker compose up -d`
-- Gdy uzywasz Cloudflare Tunnel, mozesz wylaczyc serwis Caddy (usun lub zakomentuj go w `docker-compose.yml`), poniewaz Cloudflare zajmuje sie terminacja HTTPS
+- Zmienna `COMPOSE_PROFILES` w `.env` kontroluje, ktory serwis ingress jest uruchamiany: `caddy` (domyslnie) lub `tunnel`
 - Zaktualizuj `PUBLIC_URL` w `.env` tak, aby odpowiadal hostname skonfigurowanemu w tunelu
 - Sprawdz status tunelu: `docker compose logs ava-cloudflared`
 
@@ -347,22 +370,24 @@ Uwagi:
 
 ### 11. ElevenLabs TTS (opcjonalnie)
 
-Domyslnie AVA uzywa OpenAI TTS (model `tts-1`). Jesli chcesz lepszej jakosci mowy:
+Domyslnie AVA uzywa OpenAI TTS (model `tts-1`, glos `nova`). Dla lepszej jakosci:
 
 1. Zaloz konto na https://elevenlabs.io
 2. Przejdz do: Profile > API Keys i utworz klucz
-3. Przegladaj biblioteke glosow (https://elevenlabs.io/voice-library) i skopiuj identyfikatory wybranych glosow
-4. Wpisz klucz i identyfikatory w pliku `.env`:
+3. Przegladaj biblioteke glosow (https://elevenlabs.io/voice-library) i skopiuj Voice ID
+4. Wpisz klucz i identyfikator w pliku `.env`:
 
 ```
 ELEVENLABS_API_KEY=twoj_klucz
-ELEVENLABS_VOICE_PL=identyfikator_glosu_pl
-ELEVENLABS_VOICE_EN=identyfikator_glosu_en
+ELEVENLABS_VOICE_ID=WAhoMTNdLdMoq1j3wf3I
+ELEVENLABS_MODEL=eleven_multilingual_v2
 ```
 
-Polecane glosy wielojezyczne: Charlotte, Alice, Aria.
+Jeden wielojezyczny glos uzywany jest dla wszystkich jezykow. Model `eleven_multilingual_v2` wspiera 29 jezykow.
 
-Lancuch awaryjny TTS: ElevenLabs > OpenAI TTS > Twilio Polly (wbudowany).
+Lancuch awaryjny TTS: ElevenLabs (z circuit breakerem) > OpenAI TTS (`OPENAI_TTS_VOICE`) > Twilio Polly.
+
+Po zmianie glosu/modelu wyczysc cache: `docker exec ava sh -c 'rm -f /tmp/tts_cache/*.mp3'`
 
 ---
 
@@ -559,19 +584,72 @@ AVA posiada nastepujace mechanizmy bezpieczenstwa:
 ### Architektura systemu
 
 ```
-Internet
-  |
-  v
-Caddy (port 443, HTTPS + Let's Encrypt)
-  lub Cloudflare Tunnel (polaczenie wychodzace, bez otwartych portow)
-  |
-  v
-AVA (FastAPI, port 8000, siec wewnetrzna Docker)
-  |--- GPT-4o (OpenAI API)
-  |--- ElevenLabs / OpenAI TTS
-  |--- signal-cli (port 8080, siec wewnetrzna Docker)
-  |--- /data/calls/ (logi polaczen, JSON)
-  |--- /data/contacts.json (ksiazka kontaktow)
+┌─────────────────────────────────────────────────────────────────┐
+│                       USLUGI ZEWNETRZNE                         │
+│  ┌──────────┐      ┌───────────┐      ┌──────────────┐         │
+│  │  Twilio   │      │  OpenAI   │      │  ElevenLabs  │         │
+│  │ Voice/STT │      │  GPT-4o   │      │  TTS (glos)  │         │
+│  └─────┬─────┘      │  TTS zap. │      └──────┬───────┘         │
+│        │            └─────┬─────┘             │                 │
+└────────┼──────────────────┼───────────────────┼─────────────────┘
+         │ HTTPS            │ HTTPS             │ HTTPS
+         ▼                  ▼                   ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    DOCKER HOST (twoj serwer)                    │
+│                                                                  │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │ Caddy :443 (Let's Encrypt) LUB Cloudflare Tunnel          │  │
+│  └──────────────────────┬─────────────────────────────────────┘  │
+│                         │ ava-net (siec Docker bridge)           │
+│                         ▼                                        │
+│  ┌──────────────────────────────────────────────────────┐       │
+│  │              AVA (FastAPI :8000)                       │       │
+│  │                                                       │       │
+│  │  main.py ─── conversation.py ─── tts.py               │       │
+│  │     │              │                │                  │       │
+│  │  Twilio hooks    GPT-4o loop     ElevenLabs→OpenAI    │       │
+│  │  Rate limiter    Streaming       →Polly fallback      │       │
+│  │  Audio serwer    Meta parsing    TTS cache (MD5)      │       │
+│  │  Diagnostyka     Podsumowania    Circuit breaker      │       │
+│  │     │                                                  │       │
+│  │  owner_channel.py ─── contact_lookup.py ─── i18n.py   │       │
+│  │     │                      │                           │       │
+│  │  Signal powiad.         contacts.json              8+ jezykow │
+│  │  Signal poll (3s)       CNAM lookup                Signal     │
+│  │  Slash komendy          Jezyk z prefiksu           szablony   │
+│  │  Instrukcje             Per-kontakt jezyk                     │
+│  └─────────┬────────────────────────────────────────────┘       │
+│            │ HTTP                                                │
+│            ▼                                                     │
+│  ┌─────────────────┐   ┌──────────────────────┐                 │
+│  │ signal-cli :8080 │   │ Wolumeny:             │                 │
+│  │ REST API         │   │  tts_cache (MP3)      │                 │
+│  │ Serwery Signal   │   │  /data/calls/ (JSON)  │                 │
+│  └─────────────────┘   │  /data/contacts.json  │                 │
+│                         └──────────────────────┘                 │
+└─────────────────────────────────────────────────────────────────┘
+         ▲
+         │ Protokol Signal
+         ▼
+   ┌────────────┐
+   │  Telefon   │
+   │  wlasciciela│
+   │  (Signal)  │
+   └────────────┘
 ```
+
+#### Timeouty i limity
+
+| Parametr | Wartosc | Opis |
+|----------|---------|------|
+| `speech_timeout` | 5 s | Cisza po mowie zanim Twilio uruchomi callback |
+| GPT `max_tokens` | 350 | Maks. dlugosc odpowiedzi na ture |
+| Limit tur | 10 wymian | AVA konczy rozmowe |
+| ElevenLabs timeout | 15 s | Timeout HTTP dla TTS API |
+| ElevenLabs circuit breaker | 10 min | Auto-wylaczenie po 401/403/429 |
+| Signal poll | 3 s | Sprawdzanie nowych wiadomosci |
+| Rate limiter | 30 req/min/IP | Okno przesuwne |
+| Czyszczenie rozmowy | 90 s | Opoznione czyszczenie po rozmowie |
+| TTS cache | bez wygasania | Persystentny w wolumenie Docker |
 
 Ruch z internetu trafia przez Caddy (porty 80/443) lub Cloudflare Tunnel (bez otwartych portow). Wszystkie pozostale uslugi dzialaja wylacznie w sieci wewnetrznej Docker.

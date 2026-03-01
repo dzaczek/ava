@@ -4,3 +4,4 @@ openai>=1.30.0
 httpx>=0.27.0
 twilio>=9.0.0
 python-multipart>=0.0.9
+langdetect>=1.0.9

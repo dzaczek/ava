@@ -6,6 +6,10 @@ Centralized storage for multilingual strings, voice mappings, and language-speci
 
 import os
 
+# ── Signal notification language ─────────────────────────────────────────────
+# Set SIGNAL_LANG in .env to control the language of Signal messages (pl / en).
+SIGNAL_LANG: str = os.getenv("SIGNAL_LANG", "en")
+
 # ── Twilio Language Codes ─────────────────────────────────────────────────────
 # Mapping from short language code to BCP-47 locale for Twilio STT/TTS
 TWILIO_LANG_CODES: dict[str, str] = {
@@ -72,17 +76,120 @@ CLARIFICATIONS: dict[str, str] = {
 # ── GPT Assistant Hints & Fallbacks ──────────────────────────────────────────
 
 LANG_HINTS: dict[str, str] = {
-    "pl": "Respond ONLY in Polish.",
-    "en": "Respond ONLY in English.",
-    "de": "Respond ONLY in German.",
-    "cs": "Respond ONLY in Czech.",
-    "sk": "Respond ONLY in Slovak.",
-    "fr": "Respond ONLY in French.",
-    "uk": "Respond ONLY in Ukrainian.",
-    "es": "Respond ONLY in Spanish.",
+    "pl": "The caller is currently speaking Polish. Respond in Polish. If the caller explicitly asks you to switch to another language, do so immediately.",
+    "en": "The caller is currently speaking English. Respond in English. If the caller explicitly asks you to switch to another language, do so immediately.",
+    "de": "The caller is currently speaking German. Respond in German. If the caller explicitly asks you to switch to another language, do so immediately.",
+    "cs": "The caller is currently speaking Czech. Respond in Czech. If the caller explicitly asks you to switch to another language, do so immediately.",
+    "sk": "The caller is currently speaking Slovak. Respond in Slovak. If the caller explicitly asks you to switch to another language, do so immediately.",
+    "fr": "The caller is currently speaking French. Respond in French. If the caller explicitly asks you to switch to another language, do so immediately.",
+    "uk": "The caller is currently speaking Ukrainian. Respond in Ukrainian. If the caller explicitly asks you to switch to another language, do so immediately.",
+    "es": "The caller is currently speaking Spanish. Respond in Spanish. If the caller explicitly asks you to switch to another language, do so immediately.",
 }
 
 ERROR_FALLBACKS: dict[str, str] = {
     "en": "I'm sorry, I'm experiencing a technical issue. Please try again in a moment.",
     "pl": "Przepraszam, mam chwilowy problem techniczny. Proszę spróbować za chwilę.",
+}
+
+# ── Signal notification templates ────────────────────────────────────────────
+# Keyed by SIGNAL_LANG value. Use .format() placeholders.
+
+SIG_INCOMING: dict[str, str] = {
+    "en": (
+        "📞 *Incoming call*\n"
+        "From: *{display}*\n"
+        "Number: {number}\n"
+        "🌐 Language: {lang}\n"
+        "⏰ {time}\n\n"
+        "_Send instructions:_\n"
+        "• `tell him I'll call back tomorrow at 10`\n"
+        "• `ask for the order number`\n"
+        "• `end`"
+    ),
+    "pl": (
+        "📞 *Połączenie przychodzące*\n"
+        "Od: *{display}*\n"
+        "Numer: {number}\n"
+        "🌐 Język: {lang}\n"
+        "⏰ {time}\n\n"
+        "_Wyślij instrukcje:_\n"
+        "• `powiedz mu że oddzwonię jutro o 10`\n"
+        "• `zapytaj o numer zamówienia`\n"
+        "• `end`"
+    ),
+}
+
+SIG_LIVE_UPDATE: dict[str, str] = {
+    "en": (
+        "📞 *Call in progress* – {caller}\n"
+        "{emoji} Topic: {topic}\n"
+        "Turn: {turn}\n\n"
+        "{lines}\n\n"
+        "_Reply to send instructions_"
+    ),
+    "pl": (
+        "📞 *Rozmowa w toku* – {caller}\n"
+        "{emoji} Temat: {topic}\n"
+        "Tura: {turn}\n\n"
+        "{lines}\n\n"
+        "_Odpowiedz aby wysłać instrukcje_"
+    ),
+}
+
+SIG_MISSED_CALL: dict[str, str] = {
+    "en": (
+        "📵 *Missed call (no conversation)*\n"
+        "From: {caller} ({number})\n"
+        "Time: {time}"
+    ),
+    "pl": (
+        "📵 *Nieodebrane połączenie (brak rozmowy)*\n"
+        "Od: {caller} ({number})\n"
+        "Czas: {time}"
+    ),
+}
+
+SIG_SUMMARY: dict[str, str] = {
+    "en": (
+        "📋 *Call summary*\n"
+        "━━━━━━━━━━━━━━\n"
+        "From: *{caller}*\n"
+        "Number: {number}\n"
+        "Language: {lang}\n"
+        "Started: {start}\n\n"
+        "*Summary:*\n{summary}"
+    ),
+    "pl": (
+        "📋 *Podsumowanie rozmowy*\n"
+        "━━━━━━━━━━━━━━\n"
+        "Od: *{caller}*\n"
+        "Numer: {number}\n"
+        "Język: {lang}\n"
+        "Rozpoczęto: {start}\n\n"
+        "*Podsumowanie:*\n{summary}"
+    ),
+}
+
+SIG_TRANSCRIPT_HEADER: dict[str, str] = {
+    "en": "*Transcript:*",
+    "pl": "*Transkrypcja:*",
+}
+
+SUMMARIZE_SYSTEM_PROMPT: dict[str, str] = {
+    "en": (
+        "Summarise the following phone call transcript in English. "
+        "Be concise (max 5 sentences). Cover: "
+        "1) reason for the call, "
+        "2) caller's name and company if mentioned, "
+        "3) whether a callback is needed and when, "
+        "4) any action items."
+    ),
+    "pl": (
+        "Podsumuj poniższą transkrypcję rozmowy telefonicznej po polsku. "
+        "Bądź zwięzły (maks. 5 zdań). Zawrzyj: "
+        "1) powód połączenia, "
+        "2) imię i firmę dzwoniącego (jeśli podane), "
+        "3) czy potrzebne jest oddzwonienie i kiedy, "
+        "4) zadania do wykonania."
+    ),
 }

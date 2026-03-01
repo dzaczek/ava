@@ -25,8 +25,15 @@ services:
 
       # ElevenLabs TTS (optional – falls back to OpenAI TTS then Twilio Polly)
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
-      - ELEVENLABS_VOICE_PL=${ELEVENLABS_VOICE_PL:-pNInz6obpgDQGcFmaJgB}
-      - ELEVENLABS_VOICE_EN=${ELEVENLABS_VOICE_EN:-EXAVITQu4vr4xnSDxMaL}
+      - ELEVENLABS_VOICE_ID=${ELEVENLABS_VOICE_ID:-WAhoMTNdLdMoq1j3wf3I}
+      - ELEVENLABS_MODEL=${ELEVENLABS_MODEL:-eleven_multilingual_v2}
+
+      # OpenAI TTS fallback voice
+      - OPENAI_TTS_VOICE=${OPENAI_TTS_VOICE:-nova}
+
+      # STT & language
+      - DEFAULT_STT_LANG=${DEFAULT_STT_LANG:-en-US}
+      - SIGNAL_LANG=${SIGNAL_LANG:-en}
 
       # Customise AVA's behaviour without code changes
       - OWNER_CONTEXT=${OWNER_CONTEXT:-}
@@ -70,6 +77,8 @@ services:
   # Exposes AVA to the internet via Cloudflare's network without opening ports.
   # Create a tunnel at https://one.dash.cloudflare.com → Networks → Tunnels
   # and paste the token into CLOUDFLARE_TUNNEL_TOKEN in .env
+  #
+  # Start with:  docker compose --profile tunnel up -d
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: ava-cloudflared
@@ -81,10 +90,14 @@ services:
       - ava-net
     depends_on:
       - ava
+    profiles:
+      - tunnel
 
   # ── Caddy – automatic HTTPS ───────────────────────────────────────────────
   # Twilio requires HTTPS webhooks.
   # Caddy auto-provisions a Let's Encrypt certificate for your domain.
+  #
+  # Start with:  docker compose --profile caddy up -d
   caddy:
     image: caddy:2-alpine
     container_name: ava-caddy
@@ -102,6 +115,8 @@ services:
       - ava-net
     depends_on:
       - ava
+    profiles:
+      - caddy
 
 volumes:
   tts_cache:

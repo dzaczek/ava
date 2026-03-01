@@ -34,6 +34,7 @@ from app.owner_channel import OwnerChannel
 from app.contact_lookup import ContactLookup
 from app.tts import TTSProvider
 from app import i18n
+from langdetect import detect as _langdetect_detect, LangDetectException
 
 logging.basicConfig(
     level=logging.INFO,
@@ -81,16 +82,15 @@ async def verify_twilio_signature(request: Request):
     # Reconstruct the full URL Twilio used to sign the request
     url = urljoin(_public_url + "/", request.url.path.lstrip("/"))
 
-    # Parse form body for POST validation
-    body = await request.body()
-    form_data = {}
-    if body:
-        from urllib.parse import parse_qs
-        parsed = parse_qs(body.decode("utf-8"))
-        form_data = {k: v[0] for k, v in parsed.items()}
+    # Use request.form() which FastAPI/Starlette caches properly,
+    # avoiding "Stream consumed" errors with middleware + Form() params.
+    form = await request.form()
+    form_data = dict(form)
+
+    logger.debug(f"Twilio sig check: url={url} sig={signature[:20]}... params={sorted(form_data.keys())}")
 
     if not _twilio_validator.validate(url, form_data, signature):
-        logger.warning(f"Rejected invalid Twilio signature from {request.client.host}")
+        logger.warning(f"Rejected invalid Twilio signature from {request.client.host} url={url}")
         raise HTTPException(status_code=403, detail="Invalid signature")
 
 
@@ -363,8 +363,13 @@ async def incoming_call(
     caller_name = await contacts.lookup(From)
     display     = caller_name or From
 
-    # Detect language from caller's country prefix (+48 → pl, +49 → de, etc.)
-    lang_code, twilio_locale = contacts.language_from_number(From)
+    # Per-contact language override, or fall back to phone prefix detection
+    contact_lang = contacts.contact_language(From)
+    if contact_lang:
+        lang_code, twilio_locale = contact_lang
+        logger.info(f"Using contact language override: {lang_code} ({twilio_locale})")
+    else:
+        lang_code, twilio_locale = contacts.language_from_number(From)
 
     active_calls[CallSid] = {
         "from":              From,
@@ -372,22 +377,18 @@ async def incoming_call(
         "start_time":        datetime.utcnow().isoformat(),
         "transcript":        [],
         "summary_sent":      False,
-        "language_detected": twilio_locale,   # pre-populated from prefix
+        "language_detected": twilio_locale,
     }
     owner.set_active_call(CallSid)
 
     # Notify owner – include detected language so they know what to expect
+    _sl = i18n.SIGNAL_LANG
     background_tasks.add_task(
         owner.notify,
-        f"📞 *Incoming call*\n"
-        f"From: *{display}*\n"
-        f"Number: {From}\n"
-        f"🌐 Language: {twilio_locale}\n"
-        f"⏰ {datetime.now().strftime('%H:%M:%S')}\n\n"
-        f"_Send instructions:_\n"
-        f"• `tell him I'll call back tomorrow at 10`\n"
-        f"• `ask for the order number`\n"
-        f"• `end`",
+        i18n.SIG_INCOMING.get(_sl, i18n.SIG_INCOMING["en"]).format(
+            display=display, number=From, lang=twilio_locale,
+            time=datetime.now().strftime("%H:%M:%S"),
+        ),
         CallSid,
     )
 
@@ -400,10 +401,9 @@ async def incoming_call(
         input="speech",
         action=f"/twilio/process_speech/{CallSid}",
         method="POST",
-        speech_timeout="auto",
-        language=twilio_locale,   # Twilio STT also starts in detected language
+        speech_timeout="5",
+        language=twilio_locale,
         enhanced=True,
-        speech_model="phone_call",
     )
     if audio_url:
         gather.play(audio_url)
@@ -430,18 +430,20 @@ async def process_speech(
     Called after every caller utterance.
     Pulls pending Signal instructions, generates AI response, returns TwiML.
     """
-    logger.info(f"Speech [{call_sid[:12]}]: [REDACTED] lang={LanguageCode}")
+    logger.info(f"Speech [{call_sid[:12]}]: \"{SpeechResult}\" lang={LanguageCode}")
 
     call_state = active_calls.get(call_sid, {})
     if not SpeechResult:
         return await _clarification_response(call_sid, call_state)
 
-    detected_lang = LanguageCode or call_state.get("language_detected") or "en-US"
+    prefix_lang = call_state.get("language_detected") or "en-US"
+    detected_lang = LanguageCode or _detect_language(SpeechResult, fallback=prefix_lang)
     lang_code     = detected_lang.split("-")[0].lower()
+    logger.info(f"Language resolved [{call_sid[:12]}]: twilio={LanguageCode} text_detect={detected_lang}")
 
     if call_sid in active_calls:
-        if not active_calls[call_sid].get("language_detected"):
-            active_calls[call_sid]["language_detected"] = detected_lang
+        # Always update to the latest detected language so responses track the caller
+        active_calls[call_sid]["language_detected"] = detected_lang
         active_calls[call_sid]["transcript"].append({
             "role": "user",
             "text": SpeechResult,
@@ -473,6 +475,14 @@ async def process_speech(
                 first_audio_url = await tts.generate_and_upload(part["text"], lang_code)
         elif part["type"] == "done":
             ai = part
+
+    # If GPT switched language (e.g. caller asked for German), update detection
+    if ai.get("lang") and ai["lang"] in i18n.TWILIO_LANG_CODES:
+        new_locale = i18n.TWILIO_LANG_CODES[ai["lang"]]
+        if call_sid in active_calls and active_calls[call_sid].get("language_detected") != new_locale:
+            logger.info(f"Language switch [{call_sid[:12]}]: {active_calls[call_sid].get('language_detected')} → {new_locale} (GPT meta)")
+            active_calls[call_sid]["language_detected"] = new_locale
+            lang_code = ai["lang"]
 
     if call_sid in active_calls:
         active_calls[call_sid]["transcript"].append({
@@ -507,14 +517,15 @@ async def process_speech(
         response.hangup()
         background_tasks.add_task(_send_final_summary, call_sid)
     else:
+        next_locale = _twilio_lang(lang_code)
+        logger.info(f"Next Gather [{call_sid[:12]}]: STT={next_locale} lang_code={lang_code}")
         gather = Gather(
             input="speech",
             action=f"/twilio/process_speech/{call_sid}",
             method="POST",
-            speech_timeout="auto",
-            language=_twilio_lang(lang_code),
+            speech_timeout="5",
+            language=next_locale,
             enhanced=True,
-            speech_model="phone_call",
         )
         if audio_urls:
             for url in audio_urls:
@@ -540,8 +551,9 @@ async def no_input(call_sid: str, background_tasks: BackgroundTasks):
         input="speech",
         action=f"/twilio/process_speech/{call_sid}",
         method="POST",
-        speech_timeout="auto",
+        speech_timeout="5",
         language=_twilio_lang(lang_code),
+        enhanced=True,
     )
     prompt    = i18n.NO_INPUT_PROMPTS.get(lang_code, i18n.NO_INPUT_PROMPTS["en"])
     audio_url = await tts.generate_and_upload(prompt, lang_code)
@@ -551,10 +563,12 @@ async def no_input(call_sid: str, background_tasks: BackgroundTasks):
         gather.say(prompt, language=_twilio_lang(lang_code))
 
     response.append(gather)
-    response.say(
-        i18n.NO_INPUT_GOODBYES.get(lang_code, i18n.NO_INPUT_GOODBYES["en"]),
-        language=_twilio_lang(lang_code)
-    )
+    goodbye = i18n.NO_INPUT_GOODBYES.get(lang_code, i18n.NO_INPUT_GOODBYES["en"])
+    goodbye_url = await tts.generate_and_upload(goodbye, lang_code)
+    if goodbye_url:
+        response.play(goodbye_url)
+    else:
+        response.say(goodbye, language=_twilio_lang(lang_code))
     response.hangup()
 
     background_tasks.add_task(_send_final_summary, call_sid)
@@ -599,6 +613,26 @@ def _twilio_lang(lang_code: str) -> str:
     return i18n.TWILIO_LANG_CODES.get(lang_code, "en-US")
 
 
+def _detect_language(text: str, fallback: str = "en-US") -> str:
+    """Detect language from speech text, return Twilio-style locale (e.g. 'pl-PL').
+
+    Falls back to *fallback* if detection fails or text is too short.
+    """
+    if not text or len(text.split()) < 3:
+        return fallback
+    try:
+        lang = _langdetect_detect(text)          # e.g. "pl", "de", "en"
+        locale = i18n.TWILIO_LANG_CODES.get(lang)
+        if locale:
+            return locale
+        return fallback
+    except LangDetectException:
+        return fallback
+
+
+_DEFAULT_STT_LANG = os.getenv("DEFAULT_STT_LANG", "en-US")
+
+
 def _say(parent, text: str, lang_code: str):
     lang_str, voice = i18n.POLLY_VOICES.get(
         lang_code, i18n.POLLY_VOICES["en"]
@@ -616,14 +650,15 @@ async def _clarification_response(call_sid: str, call_state: dict):
         input="speech",
         action=f"/twilio/process_speech/{call_sid}",
         method="POST",
-        speech_timeout="auto",
+        speech_timeout="5",
         language=_twilio_lang(lang_code),
+        enhanced=True,
     )
     audio_url = await tts.generate_and_upload(text, lang_code)
     if audio_url:
         gather.play(audio_url)
     else:
-        gather.say(text, language=_twilio_lang(lang_code))
+        _say(gather, text, lang_code)
     response.append(gather)
     return Response(content=str(response), media_type="text/xml")
 
@@ -639,12 +674,15 @@ async def _send_live_update(call_sid: str, ai: dict):
         for e in transcript[-6:]
     ]
     emoji = URGENCY_EMOJI.get(ai.get("urgency", "low"), "🟢")
+    _sl = i18n.SIGNAL_LANG
     await owner.notify(
-        f"📞 *Call in progress* – {caller}\n"
-        f"{emoji} Topic: {ai.get('topic') or '(detecting…)'}\n"
-        f"Turn: {len(transcript) // 2}\n\n"
-        + "\n".join(lines)
-        + "\n\n_Reply to send instructions_",
+        i18n.SIG_LIVE_UPDATE.get(_sl, i18n.SIG_LIVE_UPDATE["en"]).format(
+            caller=caller,
+            emoji=emoji,
+            topic=ai.get("topic") or "(detecting…)",
+            turn=len(transcript) // 2,
+            lines="\n".join(lines),
+        ),
         call_sid,
     )
 
@@ -658,11 +696,14 @@ async def _send_final_summary(call_sid: str):
     transcript = state.get("transcript", [])
     caller     = state.get("caller_name") or state.get("from", "Unknown")
 
+    _sl = i18n.SIGNAL_LANG
+
     if not transcript:
         await owner.notify(
-            f"📵 *Missed call (no conversation)*\n"
-            f"From: {caller} ({state.get('from', '?')})\n"
-            f"Time: {state.get('start_time', '?')}",
+            i18n.SIG_MISSED_CALL.get(_sl, i18n.SIG_MISSED_CALL["en"]).format(
+                caller=caller, number=state.get("from", "?"),
+                time=state.get("start_time", "?"),
+            ),
             call_sid,
         )
         await _save_call_to_file(call_sid, "Missed call (no conversation)")
@@ -676,13 +717,13 @@ async def _send_final_summary(call_sid: str):
     summary   = await conversation.summarize(full_text, state.get("language_detected", "en"), call_meta)
 
     await owner.notify(
-        f"📋 *Call summary*\n"
-        f"━━━━━━━━━━━━━━\n"
-        f"From: *{caller}*\n"
-        f"Number: {state.get('from', '?')}\n"
-        f"Language: {state.get('language_detected', '?')}\n"
-        f"Started: {state.get('start_time', '?')}\n\n"
-        f"*Summary:*\n{summary}",
+        i18n.SIG_SUMMARY.get(_sl, i18n.SIG_SUMMARY["en"]).format(
+            caller=caller,
+            number=state.get("from", "?"),
+            lang=state.get("language_detected", "?"),
+            start=state.get("start_time", "?"),
+            summary=summary,
+        ),
         call_sid,
     )
 
@@ -691,7 +732,8 @@ async def _send_final_summary(call_sid: str):
         for e in transcript
     )
     if transcript_text:
-        await owner.notify(f"*Transcript:*\n{transcript_text[:1800]}", call_sid)
+        header = i18n.SIG_TRANSCRIPT_HEADER.get(_sl, i18n.SIG_TRANSCRIPT_HEADER["en"])
+        await owner.notify(f"{header}\n{transcript_text[:1800]}", call_sid)
 
     await _save_call_to_file(call_sid, summary)
     logger.info(f"Final summary sent for {call_sid[:12]}")

@@ -148,7 +148,7 @@ class OwnerChannel:
                 self.signal_owner,
                 self.signal_owner.lstrip("+"),
             ):
-                logger.warning("Ignoring Signal message from unknown source")
+                logger.warning("Ignoring Signal message from unknown source: %s (expected %s)", source, self.signal_owner)
                 continue
 
             text = data.get("message", "").strip()

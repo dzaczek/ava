@@ -32,6 +32,8 @@ class ContactLookup:
         self.twilio_sid   = os.getenv("TWILIO_ACCOUNT_SID")
         self.twilio_token = os.getenv("TWILIO_AUTH_TOKEN")
         self._contacts: dict[str, str] = {}
+        self._contact_lang: dict[str, tuple[str, str]] = {}  # number → (lang_code, locale)
+        self._client = httpx.AsyncClient(timeout=5)
         self._load()
 
     def _load(self):
@@ -44,17 +46,33 @@ class ContactLookup:
             data = json.loads(CONTACTS_FILE.read_text(encoding="utf-8"))
 
             if isinstance(data, dict):
-                # Simple {number: name} mapping
-                self._contacts = {self._e164(k): v for k, v in data.items()}
+                # Simple {number: name} or {number: {name, lang}} mapping
+                for k, v in data.items():
+                    num = self._e164(k)
+                    if isinstance(v, dict):
+                        self._contacts[num] = v.get("name", "")
+                        if v.get("lang"):
+                            from app.i18n import TWILIO_LANG_CODES
+                            lang = v["lang"]
+                            locale = TWILIO_LANG_CODES.get(lang, f"{lang}-{lang.upper()}")
+                            self._contact_lang[num] = (lang, locale)
+                    else:
+                        self._contacts[num] = v
 
             elif isinstance(data, list):
-                # Array of {name, phones[]}
+                # Array of {name, phones[], lang?}
                 for entry in data:
                     name = entry.get("name", "")
+                    lang = entry.get("lang")
                     for phone in entry.get("phones", []):
-                        self._contacts[self._e164(phone)] = name
+                        num = self._e164(phone)
+                        self._contacts[num] = name
+                        if lang:
+                            from app.i18n import TWILIO_LANG_CODES
+                            locale = TWILIO_LANG_CODES.get(lang, f"{lang}-{lang.upper()}")
+                            self._contact_lang[num] = (lang, locale)
 
-            logger.info(f"Loaded {len(self._contacts)} contacts")
+            logger.info(f"Loaded {len(self._contacts)} contacts ({len(self._contact_lang)} with lang override)")
         except Exception as exc:
             logger.error(f"Failed to load contacts.json: {exc}")
 
@@ -84,21 +102,25 @@ class ContactLookup:
         # 2. Twilio Lookup – CNAM (paid, ~$0.01)
         if self.twilio_sid and self.twilio_token:
             try:
-                async with httpx.AsyncClient(timeout=5) as client:
-                    resp = await client.get(
-                        f"https://lookups.twilio.com/v2/PhoneNumbers/{phone}",
-                        params={"Fields": "caller_name"},
-                        auth=(self.twilio_sid, self.twilio_token),
-                    )
-                    if resp.status_code == 200:
-                        cnam = resp.json().get("caller_name", {}).get("caller_name")
-                        if cnam and cnam.upper() not in ("UNKNOWN", ""):
-                            logger.info("CNAM match found")
-                            return cnam
+                resp = await self._client.get(
+                    f"https://lookups.twilio.com/v2/PhoneNumbers/{phone}",
+                    params={"Fields": "caller_name"},
+                    auth=(self.twilio_sid, self.twilio_token),
+                )
+                if resp.status_code == 200:
+                    cnam = resp.json().get("caller_name", {}).get("caller_name")
+                    if cnam and cnam.upper() not in ("UNKNOWN", ""):
+                        logger.info("CNAM match found")
+                        return cnam
             except Exception as exc:
                 logger.warning(f"Twilio CNAM lookup failed: {exc}")
 
         return None
+
+    def contact_language(self, phone: str) -> Optional[tuple[str, str]]:
+        """Return per-contact language override, or None to use prefix detection."""
+        normalised = self._e164(phone)
+        return self._contact_lang.get(normalised) or self._contact_lang.get(phone)
 
     def add(self, phone: str, name: str):
         """Add a contact at runtime (not persisted to disk)."""

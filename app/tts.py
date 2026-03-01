@@ -16,6 +16,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -35,6 +36,9 @@ class TTSProvider:
     def __init__(self):
         self.elevenlabs_key = os.getenv("ELEVENLABS_API_KEY")
         self.openai_key     = os.getenv("OPENAI_API_KEY")
+        self._client        = httpx.AsyncClient(timeout=15)
+        # Circuit breaker: skip ElevenLabs for 10 min after a quota/auth failure
+        self._elevenlabs_disabled_until: float = 0
 
     async def generate_and_upload(self, text: str, language: str) -> Optional[str]:
         """
@@ -48,9 +52,13 @@ class TTSProvider:
         if path.exists():
             return f"{PUBLIC_URL}/audio/{key}.mp3"
 
+        use_elevenlabs = (
+            self.elevenlabs_key
+            and time.monotonic() > self._elevenlabs_disabled_until
+        )
         audio = (
             await self._elevenlabs(text, language)
-            if self.elevenlabs_key
+            if use_elevenlabs
             else await self._openai(text)
         )
 
@@ -63,37 +71,37 @@ class TTSProvider:
     # ── ElevenLabs ────────────────────────────────────────────────────────────
 
     async def _elevenlabs(self, text: str, language: str) -> Optional[bytes]:
-        voice_id = i18n.ELEVENLABS_VOICES.get(
-            language, i18n.ELEVENLABS_DEFAULT
-        )
+        voice_id = os.getenv("ELEVENLABS_VOICE_ID", "WAhoMTNdLdMoq1j3wf3I")
+        model_id = os.getenv("ELEVENLABS_MODEL", "eleven_multilingual_v2")
 
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(
-                    f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
-                    headers={
-                        "xi-api-key":   self.elevenlabs_key,
-                        "Content-Type": "application/json",
+            resp = await self._client.post(
+                f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+                headers={
+                    "xi-api-key":   self.elevenlabs_key,
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "text":     text,
+                    "model_id": model_id,
+                    "voice_settings": {
+                        "stability":        0.7,
+                        "similarity_boost": 0.85,
+                        "style":            0.0,
+                        "use_speaker_boost": True,
                     },
-                    json={
-                        "text":     text,
-                        "model_id": "eleven_turbo_v2_5",  # lowest latency
-                        "voice_settings": {
-                            "stability":        0.5,
-                            "similarity_boost": 0.75,
-                            "style":            0.0,
-                            "use_speaker_boost": True,
-                        },
-                        "language_code": language,
-                    },
-                )
+                },
+            )
 
-                if resp.status_code == 200:
-                    return resp.content
+            if resp.status_code == 200:
+                return resp.content
 
-                logger.error(f"ElevenLabs {resp.status_code}: {resp.text[:200]}")
-                # Attempt OpenAI TTS as fallback
-                return await self._openai(text)
+            logger.error(f"ElevenLabs {resp.status_code}: {resp.text[:200]}")
+            # Disable ElevenLabs for 10 min on auth/quota failures
+            if resp.status_code in (401, 403, 429):
+                self._elevenlabs_disabled_until = time.monotonic() + 600
+                logger.warning("ElevenLabs disabled for 10 min (quota/auth)")
+            return await self._openai(text)
 
         except Exception as exc:
             logger.error(f"ElevenLabs request failed: {exc}")
@@ -103,33 +111,33 @@ class TTSProvider:
 
     async def _openai(self, text: str) -> Optional[bytes]:
         """
-        OpenAI TTS – language-agnostic, uses the "alloy" voice which
-        handles most languages acceptably.
+        OpenAI TTS – language-agnostic fallback.
+        Voice configurable via OPENAI_TTS_VOICE env var (default: nova).
         """
         if not self.openai_key:
             return None
 
+        voice = os.getenv("OPENAI_TTS_VOICE", "nova")
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(
-                    "https://api.openai.com/v1/audio/speech",
-                    headers={
-                        "Authorization": f"Bearer {self.openai_key}",
-                        "Content-Type":  "application/json",
-                    },
-                    json={
-                        "model":           "tts-1",
-                        "input":           text,
-                        "voice":           "alloy",
-                        "response_format": "mp3",
-                    },
-                )
+            resp = await self._client.post(
+                "https://api.openai.com/v1/audio/speech",
+                headers={
+                    "Authorization": f"Bearer {self.openai_key}",
+                    "Content-Type":  "application/json",
+                },
+                json={
+                    "model":           "tts-1",
+                    "input":           text,
+                    "voice":           voice,
+                    "response_format": "mp3",
+                },
+            )
 
-                if resp.status_code == 200:
-                    return resp.content
+            if resp.status_code == 200:
+                return resp.content
 
-                logger.error(f"OpenAI TTS {resp.status_code}")
-                return None
+            logger.error(f"OpenAI TTS {resp.status_code}")
+            return None
 
         except Exception as exc:
             logger.error(f"OpenAI TTS request failed: {exc}")
