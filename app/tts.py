@@ -39,8 +39,12 @@ class TTSProvider:
         self._client        = httpx.AsyncClient(timeout=15)
         # Circuit breaker: skip ElevenLabs for 10 min after a quota/auth failure
         self._elevenlabs_disabled_until: float = 0
+        # Per-call usage tracking: call_sid -> {"elevenlabs_chars": N, "openai_chars": N}
+        self._usage: dict[str, dict[str, int]] = {}
 
-    async def generate_and_upload(self, text: str, language: str) -> Optional[str]:
+    async def generate_and_upload(
+        self, text: str, language: str, call_sid: Optional[str] = None,
+    ) -> Optional[str]:
         """
         Synthesise text to speech and return a public HTTPS URL.
         Returns None if all providers fail (Twilio will use built-in Polly).
@@ -62,11 +66,23 @@ class TTSProvider:
             else await self._openai(text)
         )
 
+        if audio and call_sid:
+            # Track characters consumed (cache miss only)
+            u = self._usage.setdefault(call_sid, {"elevenlabs_chars": 0, "openai_chars": 0})
+            if use_elevenlabs:
+                u["elevenlabs_chars"] += len(text)
+            else:
+                u["openai_chars"] += len(text)
+
         if audio:
             await asyncio.to_thread(path.write_bytes, audio)
             return f"{PUBLIC_URL}/audio/{key}.mp3"
 
         return None  # caller will fall back to Twilio <Say>
+
+    def get_usage(self, call_sid: str) -> dict[str, int]:
+        """Return and clear usage counters for a call."""
+        return self._usage.pop(call_sid, {"elevenlabs_chars": 0, "openai_chars": 0})
 
     # ── ElevenLabs ────────────────────────────────────────────────────────────
 

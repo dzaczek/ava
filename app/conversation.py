@@ -146,6 +146,7 @@ class ConversationManager:
             )
 
             raw = completion.choices[0].message.content or ""
+            usage = completion.usage
 
             parsed = self._parse_meta(raw)
             self._persist_meta(call_sid, parsed)
@@ -158,6 +159,8 @@ class ConversationManager:
                 "topic": parsed["topic"],
                 "caller_name_detected": parsed["caller_name"],
                 "lang": parsed["lang"],
+                "prompt_tokens": usage.prompt_tokens if usage else 0,
+                "completion_tokens": usage.completion_tokens if usage else 0,
             }
 
         except Exception as exc:
@@ -224,12 +227,18 @@ class ConversationManager:
                 max_tokens=350,
                 temperature=0.75,
                 stream=True,
+                stream_options={"include_usage": True},
             )
 
             buffer = ""
             full_response = ""
+            usage = None
 
             async for chunk in stream:
+                if chunk.usage:
+                    usage = chunk.usage
+                if not chunk.choices:
+                    continue
                 delta = chunk.choices[0].delta.content or ""
                 if not delta:
                     continue
@@ -264,6 +273,8 @@ class ConversationManager:
                 "topic": parsed["topic"],
                 "caller_name_detected": parsed["caller_name"],
                 "lang": parsed["lang"],
+                "prompt_tokens": usage.prompt_tokens if usage else 0,
+                "completion_tokens": usage.completion_tokens if usage else 0,
             }
 
         except Exception as exc:
@@ -320,10 +331,12 @@ class ConversationManager:
     def get_call_meta(self, call_sid: str) -> dict:
         return self.call_meta.get(call_sid, {})
 
-    async def summarize(self, transcript: str, lang: str, call_meta: dict) -> str:
+    async def summarize(self, transcript: str, lang: str, call_meta: dict) -> tuple[str, int, int]:
         """
         Ask GPT-4o to produce a concise English summary of the full call.
         Always returns English regardless of the call language.
+
+        Returns (summary_text, prompt_tokens, completion_tokens).
         """
         urgency_map   = {"low": "🟢 Low", "medium": "🟡 Medium", "high": "🔴 HIGH"}
         urgency_label = urgency_map.get(call_meta.get("urgency", "low"), "🟢 Low")
@@ -344,11 +357,16 @@ class ConversationManager:
                 temperature=0.2,
             )
             summary = resp.choices[0].message.content or "No content to summarise."
-            return f"Priority: {urgency_label}\n\n{summary}"
+            usage = resp.usage
+            return (
+                f"Priority: {urgency_label}\n\n{summary}",
+                usage.prompt_tokens if usage else 0,
+                usage.completion_tokens if usage else 0,
+            )
 
         except Exception as exc:
             logger.error(f"Summary error: {exc}")
-            return "Could not generate summary."
+            return "Could not generate summary.", 0, 0
 
     def cleanup(self, call_sid: str):
         """Free memory for a completed call."""
