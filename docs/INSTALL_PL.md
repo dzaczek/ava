@@ -144,19 +144,39 @@ Ponizej opis kazdej zmiennej:
 
 AVA komunikuje sie z Toba przez Signal. Potrzebujesz oddzielnej karty SIM, ktorej numer zarejestrujesz jako "bota".
 
+> **Wazne:** Signal wymaga weryfikacji CAPTCHA podczas rejestracji. Musisz najpierw rozwiazac ja w przegladarce, a nastepnie przekazac token do API.
+
 Uruchom kontener signal-cli:
 
 ```bash
 docker compose up signal-cli -d
 ```
 
-Poczekaj okolo 15 sekund, az kontener sie uruchomi, a nastepnie zarejestruj numer bota:
+Poczekaj okolo 15 sekund, az kontener sie uruchomi.
+
+#### Krok 1: Uzyskaj token CAPTCHA
+
+Otworz ten adres w przegladarce:
+
+```
+https://signalcaptchas.org/registration/generate.html
+```
+
+Rozwiaz CAPTCHA. Po zakonczeniu strona przekieruje na adres zaczynajacy sie od `signalcaptcha://`. **Skopiuj cala wartosc po `signalcaptcha://`** — to jest Twoj token captcha.
+
+> **Wskazowka:** W wiekszosci przegladarek przekierowanie nie zadziala (strona nie znaleziona). To normalne. Po prostu skopiuj pelny adres URL z paska adresu i wytnij wszystko po `signalcaptcha://`.
+
+#### Krok 2: Zarejestruj numer bota
 
 ```bash
 curl -X POST "http://localhost:8080/v1/register/+48NUMER_BOTA" \
   -H "Content-Type: application/json" \
-  -d '{"use_voice": false}'
+  -d '{"use_voice": false, "captcha": "WKLEJ_TOKEN_CAPTCHA_TUTAJ"}'
 ```
+
+Zamien `+48NUMER_BOTA` na numer telefonu karty SIM bota (format E.164, np. `+48123456789`).
+
+#### Krok 3: Zweryfikuj kodem SMS
 
 Otrzymasz SMS z kodem weryfikacyjnym na karte SIM bota. Wprowadz go:
 
