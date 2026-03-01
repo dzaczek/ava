@@ -64,6 +64,40 @@ CALLS_DIR = Path("/data/calls")
 # ── Diagnostics tracking ─────────────────────────────────────────────────────
 _start_time = time.monotonic()
 _call_count = 0
+_recording_state = {"enabled": False}
+
+# ── API usage / cost tracking ────────────────────────────────────────────────
+# Approximate pricing ($/unit)
+GPT4O_INPUT  = 2.50 / 1_000_000   # $/token
+GPT4O_OUTPUT = 10.0 / 1_000_000   # $/token
+ELEVENLABS   = 0.30 / 1_000       # $/char
+OPENAI_TTS   = 0.015 / 1_000      # $/char
+
+_total_usage: dict[str, int] = {
+    "gpt_prompt_tokens": 0,
+    "gpt_completion_tokens": 0,
+    "summary_prompt_tokens": 0,
+    "summary_completion_tokens": 0,
+    "tts_elevenlabs_chars": 0,
+    "tts_openai_chars": 0,
+}
+
+def _empty_call_usage() -> dict[str, int]:
+    return {
+        "gpt_prompt_tokens": 0, "gpt_completion_tokens": 0,
+        "summary_prompt_tokens": 0, "summary_completion_tokens": 0,
+        "tts_elevenlabs_chars": 0, "tts_openai_chars": 0,
+    }
+
+def _compute_cost(u: dict) -> float:
+    gpt_in = u.get("gpt_prompt_tokens", 0) + u.get("summary_prompt_tokens", 0)
+    gpt_out = u.get("gpt_completion_tokens", 0) + u.get("summary_completion_tokens", 0)
+    return (
+        gpt_in * GPT4O_INPUT
+        + gpt_out * GPT4O_OUTPUT
+        + u.get("tts_elevenlabs_chars", 0) * ELEVENLABS
+        + u.get("tts_openai_chars", 0) * OPENAI_TTS
+    )
 
 # ── Twilio webhook signature validation ──────────────────────────────────────
 
@@ -212,6 +246,24 @@ def _register_slash_commands():
                 except ValueError:
                     pass
             lines.append(f"  {sid[:8]}... from {caller}{elapsed}")
+
+        # Recording
+        lines.append(f"Recording: {'🔴 ON' if _recording_state['enabled'] else '⚪ OFF'}")
+
+        # TTS cache
+        tts_files = list(AUDIO_DIR.glob("*.mp3")) if AUDIO_DIR.exists() else []
+        tts_size = sum(f.stat().st_size for f in tts_files) / (1024 * 1024)
+        lines.append(f"TTS cache: {len(tts_files)} files ({tts_size:.1f} MB)")
+
+        # ElevenLabs circuit breaker
+        el_remaining = tts._elevenlabs_disabled_until - time.monotonic()
+        if el_remaining > 0:
+            lines.append(f"ElevenLabs: ⚠️ disabled ({int(el_remaining)}s remaining)")
+        else:
+            lines.append(f"ElevenLabs: ✅ active" if tts.elevenlabs_key else "ElevenLabs: ❌ no key")
+
+        # Stats
+        lines.append(f"Total calls: {_call_count}")
         lines.append(f"Signal: connected")
         if _public_url:
             lines.append(f"Public URL: {_public_url}")
@@ -237,7 +289,7 @@ def _register_slash_commands():
         except Exception:
             rss_mb = 0.0
 
-        return "\n".join([
+        lines = [
             "AVA Statistics",
             "━━━━━━━━━━━━━━━━",
             f"Uptime: {_format_uptime()}",
@@ -246,7 +298,46 @@ def _register_slash_commands():
             f"TTS cache: {tts_count} files ({tts_size_mb:.1f} MB)",
             f"Memory (RSS): {rss_mb:.1f} MB",
             f"Python: {platform.python_version()}",
-        ])
+        ]
+
+        # Session API usage & costs
+        u = _total_usage
+        gpt_tok = (u["gpt_prompt_tokens"] + u["gpt_completion_tokens"]
+                    + u["summary_prompt_tokens"] + u["summary_completion_tokens"])
+        gpt_cost = ((u["gpt_prompt_tokens"] + u["summary_prompt_tokens"]) * GPT4O_INPUT
+                     + (u["gpt_completion_tokens"] + u["summary_completion_tokens"]) * GPT4O_OUTPUT)
+        el_cost = u["tts_elevenlabs_chars"] * ELEVENLABS
+        oai_tts_cost = u["tts_openai_chars"] * OPENAI_TTS
+        total = gpt_cost + el_cost + oai_tts_cost
+
+        lines.append("")
+        lines.append("API Usage (session)")
+        lines.append("───────────────────")
+        lines.append(f"GPT-4o: {gpt_tok} tok (${gpt_cost:.4f})")
+        lines.append(f"ElevenLabs TTS: {u['tts_elevenlabs_chars']} chars (${el_cost:.4f})")
+        lines.append(f"OpenAI TTS: {u['tts_openai_chars']} chars (${oai_tts_cost:.4f})")
+        lines.append(f"Total est: ${total:.4f}")
+
+        # Per-call costs from saved files (last 10)
+        recent_files = sorted(CALLS_DIR.glob("*.json"), reverse=True)[:10] if CALLS_DIR.exists() else []
+        if recent_files:
+            lines.append("")
+            lines.append(f"Last {len(recent_files)} calls")
+            lines.append("───────────────────")
+            cumulative = 0.0
+            for f in recent_files:
+                try:
+                    data = json.loads(f.read_text(encoding="utf-8"))
+                    usage = data.get("usage") or {}
+                    cost = usage.get("estimated_cost", 0)
+                    cumulative += cost
+                    caller = data.get("caller_name") or data.get("caller_number", "?")
+                    lines.append(f"  {caller}: ${cost:.4f}")
+                except Exception:
+                    lines.append(f"  (error reading {f.name})")
+            lines.append(f"  Total (last {len(recent_files)}): ${cumulative:.4f}")
+
+        return "\n".join(lines)
 
     async def _cmd_calls(_args: str) -> str:
         if not CALLS_DIR.exists():
@@ -291,16 +382,26 @@ def _register_slash_commands():
         _restart_pending["ts"] = time.monotonic()
         return "Are you sure? Send `/restart confirm` within 30s to confirm."
 
+    async def _cmd_recording_on(_args: str) -> str:
+        _recording_state["enabled"] = True
+        return "🔴 Recording ON — next calls will be recorded."
+
+    async def _cmd_recording_off(_args: str) -> str:
+        _recording_state["enabled"] = False
+        return "⚪ Recording OFF — calls will not be recorded."
+
     async def _cmd_help(_args: str) -> str:
         return "\n".join([
             "AVA Signal Commands",
             "━━━━━━━━━━━━━━━━━━━━",
-            "/ping     — alive check",
-            "/status   — system status & active calls",
-            "/stats    — statistics (calls, memory, cache)",
-            "/calls    — recent call history",
-            "/restart  — restart AVA process",
-            "/help     — this message",
+            "/ping          — alive check",
+            "/status        — system status & active calls",
+            "/stats         — statistics (calls, memory, cache)",
+            "/calls         — recent call history",
+            "/recording-on  — start recording calls",
+            "/recording-off — stop recording calls",
+            "/restart       — restart AVA process",
+            "/help          — this message",
             "",
             "Call commands (no / prefix):",
             "status    — is a call active?",
@@ -313,6 +414,8 @@ def _register_slash_commands():
     owner.register_slash("/status", _cmd_status)
     owner.register_slash("/stats", _cmd_stats)
     owner.register_slash("/calls", _cmd_calls)
+    owner.register_slash("/recording-on", _cmd_recording_on)
+    owner.register_slash("/recording-off", _cmd_recording_off)
     owner.register_slash("/restart", _cmd_restart)
     owner.register_slash("/help", _cmd_help)
 
@@ -381,6 +484,26 @@ async def incoming_call(
     }
     owner.set_active_call(CallSid)
 
+    # Start Twilio recording if enabled
+    if _recording_state["enabled"]:
+        try:
+            from twilio.rest import Client as TwilioClient
+            twilio_client = TwilioClient(
+                os.getenv("TWILIO_ACCOUNT_SID"),
+                os.getenv("TWILIO_AUTH_TOKEN"),
+            )
+            await asyncio.to_thread(
+                lambda: twilio_client.calls(CallSid).recordings.create(
+                    recording_channels="dual",
+                    recording_status_callback=f"{_public_url}/twilio/recording_status",
+                    recording_status_callback_method="POST",
+                )
+            )
+            active_calls[CallSid]["recording"] = True
+            logger.info(f"Recording started for {CallSid[:12]}")
+        except Exception as exc:
+            logger.error(f"Failed to start recording: {exc}")
+
     # Notify owner – include detected language so they know what to expect
     _sl = i18n.SIGNAL_LANG
     background_tasks.add_task(
@@ -394,14 +517,14 @@ async def incoming_call(
 
     # Greet in the caller's detected language
     greeting  = i18n.GREETINGS.get(lang_code, i18n.GREETINGS["en"])
-    audio_url = await tts.generate_and_upload(greeting, lang_code)
+    audio_url = await tts.generate_and_upload(greeting, lang_code, call_sid=CallSid)
 
     response = VoiceResponse()
     gather   = Gather(
         input="speech",
         action=f"/twilio/process_speech/{CallSid}",
         method="POST",
-        speech_timeout="5",
+        speech_timeout="2",
         language=twilio_locale,
         enhanced=True,
     )
@@ -472,9 +595,15 @@ async def process_speech(
             sentences.append(part["text"])
             # Start TTS on the FIRST sentence immediately while GPT-4o continues
             if first_audio_url is None:
-                first_audio_url = await tts.generate_and_upload(part["text"], lang_code)
+                first_audio_url = await tts.generate_and_upload(part["text"], lang_code, call_sid=call_sid)
         elif part["type"] == "done":
             ai = part
+
+    # Accumulate GPT token usage for this turn
+    if call_sid in active_calls:
+        u = active_calls[call_sid].setdefault("usage", _empty_call_usage())
+        u["gpt_prompt_tokens"] += ai.get("prompt_tokens", 0)
+        u["gpt_completion_tokens"] += ai.get("completion_tokens", 0)
 
     # If GPT switched language (e.g. caller asked for German), update detection
     if ai.get("lang") and ai["lang"] in i18n.TWILIO_LANG_CODES:
@@ -501,7 +630,7 @@ async def process_speech(
     # Generate TTS for remaining sentences (first one is already done)
     audio_urls = [first_audio_url] if first_audio_url else []
     for sentence in sentences[1:]:
-        url = await tts.generate_and_upload(sentence, lang_code)
+        url = await tts.generate_and_upload(sentence, lang_code, call_sid=call_sid)
         if url:
             audio_urls.append(url)
 
@@ -523,7 +652,7 @@ async def process_speech(
             input="speech",
             action=f"/twilio/process_speech/{call_sid}",
             method="POST",
-            speech_timeout="5",
+            speech_timeout="2",
             language=next_locale,
             enhanced=True,
         )
@@ -551,12 +680,12 @@ async def no_input(call_sid: str, background_tasks: BackgroundTasks):
         input="speech",
         action=f"/twilio/process_speech/{call_sid}",
         method="POST",
-        speech_timeout="5",
+        speech_timeout="2",
         language=_twilio_lang(lang_code),
         enhanced=True,
     )
     prompt    = i18n.NO_INPUT_PROMPTS.get(lang_code, i18n.NO_INPUT_PROMPTS["en"])
-    audio_url = await tts.generate_and_upload(prompt, lang_code)
+    audio_url = await tts.generate_and_upload(prompt, lang_code, call_sid=call_sid)
     if audio_url:
         gather.play(audio_url)
     else:
@@ -564,7 +693,7 @@ async def no_input(call_sid: str, background_tasks: BackgroundTasks):
 
     response.append(gather)
     goodbye = i18n.NO_INPUT_GOODBYES.get(lang_code, i18n.NO_INPUT_GOODBYES["en"])
-    goodbye_url = await tts.generate_and_upload(goodbye, lang_code)
+    goodbye_url = await tts.generate_and_upload(goodbye, lang_code, call_sid=call_sid)
     if goodbye_url:
         response.play(goodbye_url)
     else:
@@ -594,6 +723,23 @@ async def call_status(
         # Schedule cleanup in a background coroutine so we don't block Twilio's callback
         asyncio.create_task(_delayed_cleanup(CallSid))
 
+    return Response(content="", status_code=204)
+
+
+# ── Recording status callback ────────────────────────────────────────────────
+
+@app.post("/twilio/recording_status", dependencies=[Depends(verify_twilio_signature)])
+async def recording_status(
+    CallSid: str = Form(...),
+    RecordingSid: str = Form(...),
+    RecordingUrl: str = Form(...),
+    RecordingDuration: Optional[str] = Form(None),
+):
+    """Twilio posts here when a recording status changes."""
+    logger.info(f"Recording status [{CallSid[:12]}]: {RecordingSid} duration={RecordingDuration}s")
+    if CallSid in active_calls:
+        active_calls[CallSid]["recording_url"] = f"{RecordingUrl}.mp3"
+        active_calls[CallSid]["recording_sid"] = RecordingSid
     return Response(content="", status_code=204)
 
 
@@ -650,11 +796,11 @@ async def _clarification_response(call_sid: str, call_state: dict):
         input="speech",
         action=f"/twilio/process_speech/{call_sid}",
         method="POST",
-        speech_timeout="5",
+        speech_timeout="2",
         language=_twilio_lang(lang_code),
         enhanced=True,
     )
-    audio_url = await tts.generate_and_upload(text, lang_code)
+    audio_url = await tts.generate_and_upload(text, lang_code, call_sid=call_sid)
     if audio_url:
         gather.play(audio_url)
     else:
@@ -714,7 +860,23 @@ async def _send_final_summary(call_sid: str):
         for e in transcript
     )
     call_meta = conversation.get_call_meta(call_sid)
-    summary   = await conversation.summarize(full_text, state.get("language_detected", "en"), call_meta)
+    summary, sum_prompt_tok, sum_compl_tok = await conversation.summarize(
+        full_text, state.get("language_detected", "en"), call_meta,
+    )
+
+    # Merge summary tokens and TTS usage into call usage
+    u = active_calls[call_sid].setdefault("usage", _empty_call_usage())
+    u["summary_prompt_tokens"] += sum_prompt_tok
+    u["summary_completion_tokens"] += sum_compl_tok
+
+    tts_usage = tts.get_usage(call_sid)
+    u["tts_elevenlabs_chars"] += tts_usage.get("elevenlabs_chars", 0)
+    u["tts_openai_chars"] += tts_usage.get("openai_chars", 0)
+    u["estimated_cost"] = _compute_cost(u)
+
+    # Update session-wide totals
+    for k in _total_usage:
+        _total_usage[k] += u.get(k, 0)
 
     await owner.notify(
         i18n.SIG_SUMMARY.get(_sl, i18n.SIG_SUMMARY["en"]).format(
@@ -734,6 +896,9 @@ async def _send_final_summary(call_sid: str):
     if transcript_text:
         header = i18n.SIG_TRANSCRIPT_HEADER.get(_sl, i18n.SIG_TRANSCRIPT_HEADER["en"])
         await owner.notify(f"{header}\n{transcript_text[:1800]}", call_sid)
+
+    if state.get("recording_url"):
+        await owner.notify(f"🎙 Recording: {state['recording_url']}", call_sid)
 
     await _save_call_to_file(call_sid, summary)
     logger.info(f"Final summary sent for {call_sid[:12]}")
@@ -767,6 +932,8 @@ async def _save_call_to_file(call_sid: str, summary: str):
         "summary": summary,
         "transcript": state.get("transcript", []),
         "call_meta": conversation.get_call_meta(call_sid),
+        "recording_url": state.get("recording_url"),
+        "usage": state.get("usage"),
     }
 
     try:
