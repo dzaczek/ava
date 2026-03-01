@@ -12,17 +12,18 @@
 4. [Rejestracja numeru Signal](#4-rejestracja-numeru-signal)
 5. [Konfiguracja Twilio](#5-konfiguracja-twilio)
 6. [Konfiguracja domeny i DNS](#6-konfiguracja-domeny-i-dns)
-7. [Uruchomienie](#7-uruchomienie)
-8. [Przekierowanie polaczen z telefonu](#8-przekierowanie-polaczen-z-telefonu)
-9. [Ksiazka kontaktow (opcjonalnie)](#9-ksiazka-kontaktow-opcjonalnie)
-10. [ElevenLabs TTS (opcjonalnie)](#10-elevenlabs-tts-opcjonalnie)
-11. [Personalizacja asystenta](#11-personalizacja-asystenta)
-12. [Weryfikacja dzialania](#12-weryfikacja-dzialania)
-13. [Logi polaczen](#13-logi-polaczen)
-14. [Komendy Signal podczas rozmowy](#14-komendy-signal-podczas-rozmowy)
-15. [Koszty eksploatacji](#15-koszty-eksploatacji)
-16. [Rozwiazywanie problemow](#16-rozwiazywanie-problemow)
-17. [Zabezpieczenia](#17-zabezpieczenia)
+7. [Cloudflare Tunnel (alternatywa dla Caddy)](#7-cloudflare-tunnel-alternatywa-dla-caddy)
+8. [Uruchomienie](#8-uruchomienie)
+9. [Przekierowanie polaczen z telefonu](#9-przekierowanie-polaczen-z-telefonu)
+10. [Ksiazka kontaktow (opcjonalnie)](#10-ksiazka-kontaktow-opcjonalnie)
+11. [ElevenLabs TTS (opcjonalnie)](#11-elevenlabs-tts-opcjonalnie)
+12. [Personalizacja asystenta](#12-personalizacja-asystenta)
+13. [Weryfikacja dzialania](#13-weryfikacja-dzialania)
+14. [Logi polaczen](#14-logi-polaczen)
+15. [Komendy Signal podczas rozmowy](#15-komendy-signal-podczas-rozmowy)
+16. [Koszty eksploatacji](#16-koszty-eksploatacji)
+17. [Rozwiazywanie problemow](#17-rozwiazywanie-problemow)
+18. [Zabezpieczenia](#18-zabezpieczenia)
 
 ---
 
@@ -212,9 +213,43 @@ PUBLIC_URL=https://ava.twoja-domena.pl
 
 ---
 
-### 7. Uruchomienie
+### 7. Cloudflare Tunnel (alternatywa dla Caddy)
 
-Po wykonaniu krokow 3-6 uruchom caly stos:
+Jesli nie chcesz otwierac portow 80/443 na serwerze, mozesz uzyc **Cloudflare Tunnel** do bezpiecznego udostepnienia AVA przez siec Cloudflare. Tunel nawiazuje polaczenie wychodzace z Twojego serwera -- nie wymaga publicznego IP ani otwartych portow.
+
+#### Utworzenie tunelu
+
+1. Zaloguj sie do panelu Cloudflare Zero Trust: https://one.dash.cloudflare.com
+2. Przejdz do: **Networks > Tunnels > Create a tunnel**
+3. Wybierz typ konektora **Cloudflared** i nadaj tunelowi nazwe (np. `ava`)
+4. Skopiuj token tunelu i wklej go do pliku `.env`:
+
+```env
+CLOUDFLARE_TUNNEL_TOKEN=eyJhIjoiYWJjZGVmLi4uIn0=...
+```
+
+#### Konfiguracja publicznego hostname
+
+W ustawieniach tunelu dodaj trase (Public Hostname):
+
+| Subdomain | Domain | Service |
+|-----------|--------|---------|
+| `ava` | `twoja-domena.pl` | `http://ava:8000` |
+
+Cloudflare automatycznie zapewni certyfikat SSL i bedzie proxy'owal ruch do kontenera AVA.
+
+#### Uwagi
+
+- Kontener `cloudflared` jest juz zdefiniowany w `docker-compose.yml` i uruchomi sie automatycznie z `docker compose up -d`
+- Gdy uzywasz Cloudflare Tunnel, mozesz wylaczyc serwis Caddy (usun lub zakomentuj go w `docker-compose.yml`), poniewaz Cloudflare zajmuje sie terminacja HTTPS
+- Zaktualizuj `PUBLIC_URL` w `.env` tak, aby odpowiadal hostname skonfigurowanemu w tunelu
+- Sprawdz status tunelu: `docker compose logs ava-cloudflared`
+
+---
+
+### 8. Uruchomienie
+
+Po wykonaniu krokow 3-7 uruchom caly stos:
 
 ```bash
 docker compose up -d
@@ -226,7 +261,7 @@ Sprawdz status kontenerow:
 docker compose ps
 ```
 
-Powinienes zobaczyc trzy dzialajace kontenery: `ava`, `ava-signal-cli`, `ava-caddy`.
+Powinienes zobaczyc dzialajace kontenery: `ava`, `ava-signal-cli`, `ava-caddy` (lub `ava-cloudflared` jesli uzywasz Cloudflare Tunnel).
 
 Sledz logi w czasie rzeczywistym:
 
@@ -248,7 +283,7 @@ Oczekiwana odpowiedz:
 
 ---
 
-### 8. Przekierowanie polaczen z telefonu
+### 9. Przekierowanie polaczen z telefonu
 
 Przekieruj polaczenia ze swojego telefonu osobistego na numer Twilio.
 
@@ -273,7 +308,7 @@ Dokladna sciezka moze sie roznic w zaleznosci od operatora. W razie problemow sk
 
 ---
 
-### 9. Ksiazka kontaktow (opcjonalnie)
+### 10. Ksiazka kontaktow (opcjonalnie)
 
 Aby AVA rozpoznawala dzwoniacych po imieniu, utworz plik `data/contacts.json`.
 
@@ -310,7 +345,7 @@ Uwagi:
 
 ---
 
-### 10. ElevenLabs TTS (opcjonalnie)
+### 11. ElevenLabs TTS (opcjonalnie)
 
 Domyslnie AVA uzywa OpenAI TTS (model `tts-1`). Jesli chcesz lepszej jakosci mowy:
 
@@ -331,7 +366,7 @@ Lancuch awaryjny TTS: ElevenLabs > OpenAI TTS > Twilio Polly (wbudowany).
 
 ---
 
-### 11. Personalizacja asystenta
+### 12. Personalizacja asystenta
 
 AVA dostosowuje swoje zachowanie na podstawie zmiennej `OWNER_CONTEXT` w pliku `.env`. Ten tekst jest wstrzykiwany do promptu systemowego GPT-4o.
 
@@ -351,7 +386,7 @@ Dla bardziej zaawansowanych zmian mozesz edytowac zmienna `SYSTEM_PROMPT` w plik
 
 ---
 
-### 12. Weryfikacja dzialania
+### 13. Weryfikacja dzialania
 
 Po zakonczeniu konfiguracji wykonaj nastepujace testy:
 
@@ -385,7 +420,7 @@ Powinienes otrzymac odpowiedz: "No active call at the moment."
 
 ---
 
-### 13. Logi polaczen
+### 14. Logi polaczen
 
 Po kazdym polaczeniu (rowniez nieodebranym) AVA zapisuje dane do pliku JSON w katalogu `data/calls/`.
 
@@ -416,7 +451,7 @@ Przyklad zawartosci:
 
 ---
 
-### 14. Komendy Signal podczas rozmowy
+### 15. Komendy Signal podczas rozmowy
 
 Gdy AVA prowadzi rozmowe, mozesz wysylac instrukcje przez Signal:
 
@@ -432,7 +467,7 @@ AVA potwierdza kazda instrukcje wiadomoscia zwrotna na Signal.
 
 ---
 
-### 15. Koszty eksploatacji
+### 16. Koszty eksploatacji
 
 Szacunkowe koszty dla typowej 2-minutowej rozmowy:
 
@@ -448,7 +483,7 @@ Laczny koszt typowej rozmowy: okolo $0.20-0.25.
 
 ---
 
-### 16. Rozwiazywanie problemow
+### 17. Rozwiazywanie problemow
 
 #### Twilio nie moze sie polaczyc z webhookiem
 
@@ -505,7 +540,7 @@ docker compose up -d --build
 
 ---
 
-### 17. Zabezpieczenia
+### 18. Zabezpieczenia
 
 AVA posiada nastepujace mechanizmy bezpieczenstwa:
 
@@ -528,6 +563,7 @@ Internet
   |
   v
 Caddy (port 443, HTTPS + Let's Encrypt)
+  lub Cloudflare Tunnel (polaczenie wychodzace, bez otwartych portow)
   |
   v
 AVA (FastAPI, port 8000, siec wewnetrzna Docker)
@@ -538,4 +574,4 @@ AVA (FastAPI, port 8000, siec wewnetrzna Docker)
   |--- /data/contacts.json (ksiazka kontaktow)
 ```
 
-Ruch z internetu trafia wylacznie na porty 80 (przekierowanie na HTTPS) i 443 (Caddy). Wszystkie pozostale uslugi dzialaja wylacznie w sieci wewnetrznej Docker.
+Ruch z internetu trafia przez Caddy (porty 80/443) lub Cloudflare Tunnel (bez otwartych portow). Wszystkie pozostale uslugi dzialaja wylacznie w sieci wewnetrznej Docker.

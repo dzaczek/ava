@@ -120,7 +120,30 @@ curl -X POST "http://localhost:8080/v1/register/+48XXXXXXXXX/verify/123456"
 
 Without a key AVA falls back to OpenAI TTS, then Twilio Polly.
 
-### 5. Deploy
+### 5. Cloudflare Tunnel (alternative to Caddy)
+
+If you prefer not to open ports 80/443 on your server, you can use **Cloudflare Tunnel** to securely expose AVA to the internet through Cloudflare's network.
+
+1. Log in to the Cloudflare Zero Trust dashboard: https://one.dash.cloudflare.com
+2. Go to **Networks → Tunnels → Create a tunnel**
+3. Choose **Cloudflared** connector type and give the tunnel a name (e.g. `ava`)
+4. Copy the tunnel token and paste it into `.env`:
+
+```env
+CLOUDFLARE_TUNNEL_TOKEN=eyJhIjoiYWJjZGVmLi4uIn0=...
+```
+
+5. In the tunnel's **Public Hostname** settings, add a route:
+
+| Subdomain | Domain | Service |
+|-----------|--------|---------|
+| `ava` | `your-domain.com` | `http://ava:8000` |
+
+6. The `cloudflared` container is already defined in `docker-compose.yml` and will start automatically with `docker compose up -d`.
+
+> **Note:** When using Cloudflare Tunnel you can disable the Caddy service (remove or comment it out from `docker-compose.yml`) since Cloudflare handles HTTPS termination. Update `PUBLIC_URL` in `.env` to match the hostname configured in the tunnel.
+
+### 6. Deploy
 
 ```bash
 # 1. Clone / copy the project
@@ -137,6 +160,9 @@ docker compose logs -f ava
 
 # Health check
 curl https://your-domain.com/health
+
+# Check Cloudflare Tunnel status (if using)
+docker compose logs ava-cloudflared
 ```
 
 ---
@@ -191,26 +217,28 @@ curl http://localhost:8080/v1/accounts
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                      Docker host                     │
-│                                                      │
-│  ┌──────────┐    ┌──────────────────┐               │
-│  │  Caddy   │───▶│   AVA (FastAPI)  │               │
-│  │  HTTPS   │    │                  │    ┌────────┐ │
-│  └──────────┘    │  ┌────────────┐  │───▶│signal  │ │
-│                  │  │conversation│  │    │  cli   │ │
-│                  │  │  (GPT-4o)  │  │    └────────┘ │
-│                  │  └────────────┘  │               │
-│                  │  ┌────────────┐  │               │
-│                  │  │owner_chan. │  │               │
-│                  │  │ (Signal)   │  │               │
-│                  │  └────────────┘  │               │
-│                  │  ┌────────────┐  │  ┌──────────┐ │
-│                  │  │ElevenLabs  │  │  │data/calls│ │
-│                  │  │    TTS     │  │  │  (JSON)  │ │
-│                  │  └────────────┘  │  └──────────┘ │
-│                  └──────────────────┘               │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                       Docker host                         │
+│                                                           │
+│  ┌──────────┐                                            │
+│  │  Caddy   │──┐                                         │
+│  │  HTTPS   │  │  ┌──────────────────┐                   │
+│  └──────────┘  ├─▶│   AVA (FastAPI)  │                   │
+│  ┌──────────┐  │  │                  │    ┌────────┐     │
+│  │cloudflare│──┘  │  ┌────────────┐  │───▶│signal  │     │
+│  │  tunnel  │     │  │conversation│  │    │  cli   │     │
+│  └──────────┘     │  │  (GPT-4o)  │  │    └────────┘     │
+│                   │  └────────────┘  │                    │
+│                   │  ┌────────────┐  │                    │
+│                   │  │owner_chan. │  │                    │
+│                   │  │ (Signal)   │  │                    │
+│                   │  └────────────┘  │                    │
+│                   │  ┌────────────┐  │  ┌──────────┐     │
+│                   │  │ElevenLabs  │  │  │data/calls│     │
+│                   │  │    TTS     │  │  │  (JSON)  │     │
+│                   │  └────────────┘  │  └──────────┘     │
+│                   └──────────────────┘                    │
+└──────────────────────────────────────────────────────────┘
          ▲                    │
          │ webhooks           │ API calls
          ▼                    ▼

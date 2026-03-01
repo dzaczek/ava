@@ -66,6 +66,22 @@ services:
     networks:
       - ava-net
 
+  # ── Cloudflare Tunnel ─────────────────────────────────────────────────────
+  # Exposes AVA to the internet via Cloudflare's network without opening ports.
+  # Create a tunnel at https://one.dash.cloudflare.com → Networks → Tunnels
+  # and paste the token into CLOUDFLARE_TUNNEL_TOKEN in .env
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: ava-cloudflared
+    restart: unless-stopped
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    networks:
+      - ava-net
+    depends_on:
+      - ava
+
   # ── Caddy – automatic HTTPS ───────────────────────────────────────────────
   # Twilio requires HTTPS webhooks.
   # Caddy auto-provisions a Let's Encrypt certificate for your domain.

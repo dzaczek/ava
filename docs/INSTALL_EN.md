@@ -12,17 +12,18 @@
 4. [Signal Bot Registration](#4-signal-bot-registration)
 5. [Twilio Configuration](#5-twilio-configuration)
 6. [Domain and DNS Setup](#6-domain-and-dns-setup)
-7. [Starting the Application](#7-starting-the-application)
-8. [Phone Call Forwarding](#8-phone-call-forwarding)
-9. [Contact Book (Optional)](#9-contact-book-optional)
-10. [ElevenLabs TTS (Optional)](#10-elevenlabs-tts-optional)
-11. [Customising the Assistant](#11-customising-the-assistant)
-12. [Verifying the Setup](#12-verifying-the-setup)
-13. [Call Logs](#13-call-logs)
-14. [Signal Commands During a Call](#14-signal-commands-during-a-call)
-15. [Running Costs](#15-running-costs)
-16. [Troubleshooting](#16-troubleshooting)
-17. [Security](#17-security)
+7. [Cloudflare Tunnel (Alternative to Caddy)](#7-cloudflare-tunnel-alternative-to-caddy)
+8. [Starting the Application](#8-starting-the-application)
+9. [Phone Call Forwarding](#9-phone-call-forwarding)
+10. [Contact Book (Optional)](#10-contact-book-optional)
+11. [ElevenLabs TTS (Optional)](#11-elevenlabs-tts-optional)
+12. [Customising the Assistant](#12-customising-the-assistant)
+13. [Verifying the Setup](#13-verifying-the-setup)
+14. [Call Logs](#14-call-logs)
+15. [Signal Commands During a Call](#15-signal-commands-during-a-call)
+16. [Running Costs](#16-running-costs)
+17. [Troubleshooting](#17-troubleshooting)
+18. [Security](#18-security)
 
 ---
 
@@ -212,9 +213,43 @@ PUBLIC_URL=https://ava.your-domain.com
 
 ---
 
-### 7. Starting the Application
+### 7. Cloudflare Tunnel (Alternative to Caddy)
 
-Once steps 3 through 6 are complete, start the full stack:
+If you prefer not to open ports 80/443 on your server, you can use **Cloudflare Tunnel** to securely expose AVA to the internet through Cloudflare's network. The tunnel establishes an outbound connection from your server -- no public IP or open ports required.
+
+#### Creating the Tunnel
+
+1. Log in to the Cloudflare Zero Trust dashboard: https://one.dash.cloudflare.com
+2. Navigate to: **Networks > Tunnels > Create a tunnel**
+3. Choose the **Cloudflared** connector type and give the tunnel a name (e.g. `ava`)
+4. Copy the tunnel token and paste it into `.env`:
+
+```env
+CLOUDFLARE_TUNNEL_TOKEN=eyJhIjoiYWJjZGVmLi4uIn0=...
+```
+
+#### Configuring the Public Hostname
+
+In the tunnel settings, add a route (Public Hostname):
+
+| Subdomain | Domain | Service |
+|-----------|--------|---------|
+| `ava` | `your-domain.com` | `http://ava:8000` |
+
+Cloudflare will automatically provision an SSL certificate and proxy traffic to the AVA container.
+
+#### Notes
+
+- The `cloudflared` container is already defined in `docker-compose.yml` and will start automatically with `docker compose up -d`
+- When using Cloudflare Tunnel, you can disable the Caddy service (remove or comment it out from `docker-compose.yml`) since Cloudflare handles HTTPS termination
+- Update `PUBLIC_URL` in `.env` to match the hostname configured in the tunnel
+- Check the tunnel status: `docker compose logs ava-cloudflared`
+
+---
+
+### 8. Starting the Application
+
+Once steps 3 through 7 are complete, start the full stack:
 
 ```bash
 docker compose up -d
@@ -226,7 +261,7 @@ Check the status of the containers:
 docker compose ps
 ```
 
-You should see three running containers: `ava`, `ava-signal-cli`, `ava-caddy`.
+You should see the running containers: `ava`, `ava-signal-cli`, `ava-caddy` (or `ava-cloudflared` if using Cloudflare Tunnel).
 
 Follow the logs in real time:
 
@@ -248,7 +283,7 @@ Expected response:
 
 ---
 
-### 8. Phone Call Forwarding
+### 9. Phone Call Forwarding
 
 Forward calls from your personal phone to the Twilio number.
 
@@ -273,7 +308,7 @@ The exact path may vary depending on your carrier. If you run into issues, conta
 
 ---
 
-### 9. Contact Book (Optional)
+### 10. Contact Book (Optional)
 
 To allow AVA to recognise callers by name, create a file at `data/contacts.json`.
 
@@ -310,7 +345,7 @@ Notes:
 
 ---
 
-### 10. ElevenLabs TTS (Optional)
+### 11. ElevenLabs TTS (Optional)
 
 By default, AVA uses OpenAI TTS (model `tts-1`). For higher voice quality:
 
@@ -331,7 +366,7 @@ TTS fallback chain: ElevenLabs > OpenAI TTS > Twilio Polly (built-in).
 
 ---
 
-### 11. Customising the Assistant
+### 12. Customising the Assistant
 
 AVA adjusts its behaviour based on the `OWNER_CONTEXT` variable in the `.env` file. This text is injected into the GPT-4o system prompt.
 
@@ -351,7 +386,7 @@ For more advanced changes, edit the `SYSTEM_PROMPT` variable in `app/conversatio
 
 ---
 
-### 12. Verifying the Setup
+### 13. Verifying the Setup
 
 After completing the configuration, run the following tests:
 
@@ -385,7 +420,7 @@ You should receive a reply: "No active call at the moment."
 
 ---
 
-### 13. Call Logs
+### 14. Call Logs
 
 After every call (including missed calls), AVA saves the data to a JSON file in the `data/calls/` directory.
 
@@ -416,7 +451,7 @@ Example contents:
 
 ---
 
-### 14. Signal Commands During a Call
+### 15. Signal Commands During a Call
 
 When AVA is handling a call, you can send instructions via Signal:
 
@@ -434,7 +469,7 @@ AVA confirms every instruction with a reply on Signal.
 
 ---
 
-### 15. Running Costs
+### 16. Running Costs
 
 Estimated costs for a typical 2-minute call:
 
@@ -450,7 +485,7 @@ Total cost of a typical call: approximately $0.20-0.25.
 
 ---
 
-### 16. Troubleshooting
+### 17. Troubleshooting
 
 #### Twilio cannot reach the webhook
 
@@ -507,7 +542,7 @@ docker compose up -d --build
 
 ---
 
-### 17. Security
+### 18. Security
 
 AVA includes the following security mechanisms:
 
@@ -530,6 +565,7 @@ Internet
   |
   v
 Caddy (port 443, HTTPS + Let's Encrypt)
+  or Cloudflare Tunnel (outbound connection, no open ports)
   |
   v
 AVA (FastAPI, port 8000, internal Docker network)
@@ -540,4 +576,4 @@ AVA (FastAPI, port 8000, internal Docker network)
   |--- /data/contacts.json (contact book)
 ```
 
-Internet traffic reaches only ports 80 (redirect to HTTPS) and 443 (Caddy). All other services run exclusively on the internal Docker network.
+Internet traffic reaches AVA via Caddy (ports 80/443) or Cloudflare Tunnel (no open ports required). All other services run exclusively on the internal Docker network.
