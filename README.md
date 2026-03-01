@@ -6,156 +6,144 @@
 
 ## Architecture Overview
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              EXTERNAL SERVICES                              │
-│                                                                             │
-│  ┌──────────────┐    ┌──────────────────┐    ┌────────────────────┐         │
-│  │   TWILIO      │    │   OPENAI          │    │   ELEVENLABS       │         │
-│  │              │    │                  │    │                    │         │
-│  │  Voice/PSTN  │    │  GPT-4o          │    │  TTS (voice)       │         │
-│  │  STT (Gather)│    │  Conversation AI │    │  eleven_multi_v2   │         │
-│  │  Webhooks    │    │  TTS fallback    │    │                    │         │
-│  └──────┬───────┘    └────────┬─────────┘    └──────────┬─────────┘         │
-│         │                     │                         │                   │
-└─────────┼─────────────────────┼─────────────────────────┼───────────────────┘
-          │ HTTPS               │ HTTPS                   │ HTTPS
-          │ webhooks            │ api.openai.com           │ api.elevenlabs.io
-          ▼                     ▼                         ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                          DOCKER HOST (your server)                          │
-│                                                                             │
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │                     INGRESS (choose one)                             │   │
-│  │                                                                      │   │
-│  │   ┌─────────────────────┐    ┌─────────────────────────────┐        │   │
-│  │   │   Caddy :443/:80    │ OR │  Cloudflare Tunnel          │        │   │
-│  │   │   Let's Encrypt     │    │  (outbound, no open ports)  │        │   │
-│  │   │   auto HTTPS        │    │  CLOUDFLARE_TUNNEL_TOKEN    │        │   │
-│  │   └──────────┬──────────┘    └──────────────┬──────────────┘        │   │
-│  └──────────────┼──────────────────────────────┼───────────────────────┘   │
-│                 │ ava-net (Docker bridge)       │                           │
-│                 ▼                               ▼                           │
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │                     AVA (FastAPI :8000)                               │   │
-│  │                                                                      │   │
-│  │  ┌──────────────┐  ┌────────────────┐  ┌───────────────┐            │   │
-│  │  │ main.py      │  │ conversation.py│  │ tts.py        │            │   │
-│  │  │              │  │                │  │               │            │   │
-│  │  │ Call routing  │  │ GPT-4o loop   │  │ ElevenLabs    │            │   │
-│  │  │ Twilio hooks │  │ System prompt  │  │ → OpenAI TTS  │            │   │
-│  │  │ Rate limiter │  │ Meta parsing   │  │ → Polly (last)│            │   │
-│  │  │ Audio serve  │  │ Summarizer     │  │ Cache (MD5)   │            │   │
-│  │  │ Diagnostics  │  │ Streaming      │  │ Circuit break │            │   │
-│  │  └──────────────┘  └────────────────┘  └───────────────┘            │   │
-│  │                                                                      │   │
-│  │  ┌──────────────┐  ┌────────────────┐  ┌───────────────┐            │   │
-│  │  │ owner_chan.py │  │ contact_look.py│  │ i18n.py       │            │   │
-│  │  │              │  │                │  │               │            │   │
-│  │  │ Signal notify│  │ contacts.json  │  │ 8+ languages  │            │   │
-│  │  │ Signal poll  │  │ Twilio CNAM    │  │ Signal templ. │            │   │
-│  │  │ Slash cmds   │  │ E.164 norm.    │  │ Polly voices  │            │   │
-│  │  │ Instructions │  │ Lang from pfx  │  │ Twilio codes  │            │   │
-│  │  └──────┬───────┘  └────────────────┘  └───────────────┘            │   │
-│  └─────────┼────────────────────────────────────────────────────────────┘   │
-│            │ HTTP (ava-net)                                                 │
-│            ▼                                                               │
-│  ┌──────────────────────┐    ┌──────────────────────┐                      │
-│  │  signal-cli :8080    │    │  Persistent Volumes   │                      │
-│  │  REST API            │    │                      │                      │
-│  │  Native mode         │    │  tts_cache  (MP3s)   │                      │
-│  │  Self-hosted         │    │  signal_data         │                      │
-│  │                      │    │  /data/calls/ (JSON) │                      │
-│  │  ◄──── Signal ────►  │    │  /data/contacts.json │                      │
-│  │       servers         │    └──────────────────────┘                      │
-│  └──────────────────────┘                                                  │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-          ▲
-          │ Signal protocol
-          ▼
-    ┌────────────┐
-    │  Owner's   │
-    │  phone     │
-    │  (Signal)  │
-    └────────────┘
+```mermaid
+graph TB
+    subgraph External["EXTERNAL SERVICES"]
+        Twilio["Twilio<br/>Voice / PSTN<br/>STT (Gather)<br/>Webhooks"]
+        OpenAI["OpenAI<br/>GPT-4o (conversation)<br/>TTS (fallback)"]
+        ElevenLabs["ElevenLabs<br/>TTS (primary voice)<br/>eleven_multilingual_v2"]
+    end
+
+    subgraph Docker["DOCKER HOST (your server)"]
+        subgraph Ingress["INGRESS (choose one)"]
+            Caddy["Caddy :443/:80<br/>Let's Encrypt<br/>auto HTTPS"]
+            Cloudflared["Cloudflare Tunnel<br/>outbound, no open ports"]
+        end
+
+        subgraph AVA["AVA (FastAPI :8000)"]
+            Main["main.py<br/>Call routing<br/>Twilio hooks<br/>Rate limiter<br/>Audio serve<br/>Diagnostics"]
+            Conv["conversation.py<br/>GPT-4o loop<br/>Streaming<br/>Meta parsing<br/>Summarizer"]
+            TTS["tts.py<br/>ElevenLabs → OpenAI<br/>→ Polly (fallback)<br/>Cache (MD5)<br/>Circuit breaker"]
+            Owner["owner_channel.py<br/>Signal notify<br/>Signal poll (3s)<br/>Slash commands<br/>Instructions"]
+            Contact["contact_lookup.py<br/>contacts.json<br/>Twilio CNAM<br/>E.164 normalize<br/>Lang from prefix"]
+            I18n["i18n.py<br/>8+ languages<br/>Signal templates<br/>Polly voices<br/>Twilio codes"]
+        end
+
+        SignalCLI["signal-cli :8080<br/>REST API<br/>Native mode<br/>Self-hosted"]
+
+        subgraph Volumes["Persistent Volumes"]
+            TTSCache["tts_cache (MP3s)"]
+            CallData["/data/calls/ (JSON)"]
+            Contacts["/data/contacts.json"]
+            SignalData["signal_data"]
+        end
+    end
+
+    OwnerPhone["Owner's Phone<br/>(Signal app)"]
+
+    Twilio -->|"HTTPS webhooks"| Caddy
+    Twilio -->|"HTTPS webhooks"| Cloudflared
+    Caddy -->|"ava-net"| Main
+    Cloudflared -->|"ava-net"| Main
+
+    Main <--> Conv
+    Main <--> TTS
+    Main <--> Owner
+    Main <--> Contact
+    Conv <--> I18n
+    Main <--> I18n
+
+    Conv -->|"HTTPS"| OpenAI
+    TTS -->|"HTTPS"| ElevenLabs
+    TTS -->|"HTTPS"| OpenAI
+
+    Owner -->|"HTTP (ava-net)"| SignalCLI
+    SignalCLI <-->|"Signal protocol"| OwnerPhone
+
+    TTS --> TTSCache
+    Main --> CallData
+    Contact --> Contacts
+    SignalCLI --> SignalData
+
+    style External fill:#f9f0ff,stroke:#7c3aed
+    style Docker fill:#f0f9ff,stroke:#2563eb
+    style AVA fill:#ecfdf5,stroke:#059669
+    style Ingress fill:#fef3c7,stroke:#d97706
+    style Volumes fill:#fef2f2,stroke:#dc2626
 ```
 
 ---
 
 ## Call Flow (detailed sequence)
 
-```
-Caller's phone                    Twilio                    AVA Server                    OpenAI / ElevenLabs
-      │                             │                           │                               │
-      │ ──── dials owner ──────►    │                           │                               │
-      │      (call forwarded)       │                           │                               │
-      │                             │                           │                               │
-      │                             │ ── POST /twilio/incoming ─►│                               │
-      │                             │    (CallSid, From, To)    │                               │
-      │                             │                           │                               │
-      │                             │                           │── contact lookup (local/CNAM) ─│
-      │                             │                           │── detect lang from prefix ─────│
-      │                             │                           │── Signal: notify owner ────────│
-      │                             │                           │                               │
-      │                             │                           │── greeting TTS ───────────────►│
-      │                             │                           │◄── MP3 audio URL ─────────────│
-      │                             │                           │                               │
-      │                             │ ◄─ TwiML: <Gather>+<Play>│                               │
-      │                             │    speech_timeout=5s      │                               │
-      │                             │    language=de-CH          │                               │
-      │                             │    enhanced=true           │                               │
-      │                             │                           │                               │
-      │ ◄── plays greeting ────    │                           │                               │
-      │                             │                           │                               │
-      │ ──── speaks ───────────►   │                           │                               │
-      │                             │── STT transcription ──►   │                               │
-      │                             │                           │                               │
-      │                             │ POST /twilio/process_speech│                               │
-      │                             │   SpeechResult, Confidence│                               │
-      │                             │                           │                               │
-      │                             │                           │── langdetect on text ──────────│
-      │                             │                           │── pop Signal instructions ─────│
-      │                             │                           │                               │
-      │                             │                           │── GPT-4o streaming ──────────►│
-      │                             │                           │◄── sentence chunks ───────────│
-      │                             │                           │                               │
-      │                             │                           │── TTS sentence 1 ────────────►│
-      │                             │                           │◄── MP3 URL ──────────────────│
-      │                             │                           │   (pipeline: TTS starts on    │
-      │                             │                           │    1st sentence while GPT     │
-      │                             │                           │    still generates rest)       │
-      │                             │                           │                               │
-      │                             │                           │── parse <meta> JSON ───────────│
-      │                             │                           │   end_call, urgency, topic,   │
-      │                             │                           │   caller_name, lang            │
-      │                             │                           │                               │
-      │                             │                           │── if lang changed: update STT  │
-      │                             │                           │── TTS remaining sentences ────►│
-      │                             │                           │                               │
-      │                             │ ◄─ TwiML: <Gather>+<Play>│                               │
-      │                             │    (next STT language)    │                               │
-      │                             │                           │                               │
-      │ ◄── plays response ────    │                           │                               │
-      │                             │                           │                               │
-      │          ... loop repeats (max 10 exchanges) ...        │                               │
-      │                             │                           │                               │
-      │                             │                           │── Signal: live update (4th) ──│
-      │                             │                           │                               │
-      │                    [end_call=true or END_CALL_NOW]       │                               │
-      │                             │                           │                               │
-      │                             │ ◄── TwiML: <Play>+Hangup │                               │
-      │ ◄── goodbye + hangup ──    │                           │                               │
-      │                             │                           │                               │
-      │                             │ POST /twilio/status       │                               │
-      │                             │   CallStatus=completed    │                               │
-      │                             │                           │                               │
-      │                             │                           │── GPT-4o: summarize call ────►│
-      │                             │                           │◄── summary text ─────────────│
-      │                             │                           │── Signal: send summary ───────│
-      │                             │                           │── Signal: send transcript ────│
-      │                             │                           │── save JSON to /data/calls/ ──│
-      │                             │                           │── cleanup (90s delay) ────────│
+```mermaid
+sequenceDiagram
+    participant Caller as Caller's Phone
+    participant Twilio as Twilio (PSTN + STT)
+    participant AVA as AVA Server
+    participant GPT as OpenAI GPT-4o
+    participant TTS as ElevenLabs / OpenAI TTS
+    participant Signal as Owner (Signal)
+
+    Caller->>Twilio: Dials owner (call forwarded)
+    Twilio->>AVA: POST /twilio/incoming<br/>(CallSid, From, To)
+
+    Note over AVA: Contact lookup (local/CNAM)<br/>Detect lang from phone prefix<br/>(+41→de-CH, +48→pl-PL)
+
+    AVA-->>Signal: 📞 Incoming call notification
+    AVA->>TTS: Generate greeting TTS
+    TTS-->>AVA: MP3 audio URL
+
+    AVA->>Twilio: TwiML: Gather + Play<br/>speech_timeout=5s<br/>language=de-CH, enhanced=true
+    Twilio->>Caller: Plays greeting audio
+
+    loop Max 10 exchanges
+        Caller->>Twilio: Speaks
+        Twilio->>AVA: POST /process_speech<br/>(SpeechResult, Confidence)
+
+        Note over AVA: langdetect on text<br/>Pop Signal instructions
+
+        opt Owner sent instruction
+            Signal-->>AVA: "tell him I'll call back"
+            Note over AVA: Inject [RELAY_TO_CALLER: ...]<br/>into GPT user message
+        end
+
+        AVA->>GPT: Stream GPT-4o (user text + instructions)
+        GPT-->>AVA: Sentence chunks (streaming)
+
+        Note over AVA: TTS pipeline: start TTS on<br/>1st sentence while GPT<br/>still generates the rest
+
+        AVA->>TTS: TTS sentence 1 (parallel)
+        TTS-->>AVA: MP3 URL
+        AVA->>TTS: TTS remaining sentences
+
+        Note over AVA: Parse meta JSON<br/>end_call, urgency, topic,<br/>caller_name, lang
+
+        opt GPT switched language
+            Note over AVA: Update STT language<br/>for next Gather<br/>e.g. de-CH → pl-PL
+        end
+
+        AVA->>Twilio: TwiML: Gather + Play<br/>(updated STT language)
+        Twilio->>Caller: Plays response audio
+
+        opt Every 4 transcript entries
+            AVA-->>Signal: 📞 Live update<br/>(topic, last 6 lines)
+        end
+    end
+
+    Note over AVA: end_call=true OR<br/>END_CALL_NOW from owner
+
+    AVA->>Twilio: TwiML: Play + Hangup
+    Twilio->>Caller: Goodbye + disconnect
+
+    Twilio->>AVA: POST /twilio/status<br/>CallStatus=completed
+
+    AVA->>GPT: Summarize full transcript
+    GPT-->>AVA: Summary text
+    AVA-->>Signal: 📋 Call summary + priority
+    AVA-->>Signal: 📝 Full transcript
+
+    Note over AVA: Save JSON to /data/calls/<br/>Cleanup after 90s delay
 ```
 
 ---
@@ -188,191 +176,158 @@ Caller's phone                    Twilio                    AVA Server          
 
 ## Language Detection & Switching
 
-```
-                          CALL START
-                              │
-                              ▼
-                    ┌──────────────────┐
-                    │ Phone prefix     │
-                    │ detection        │
-                    │ +41 → de-CH     │
-                    │ +48 → pl-PL     │
-                    │ +44 → en-GB     │
-                    │ (198 prefixes)   │
-                    └────────┬─────────┘
-                             │
-              ┌──────────────┼──────────────┐
-              ▼              │              ▼
-     ┌────────────────┐      │     ┌────────────────┐
-     │ Contact lang   │      │     │ DEFAULT_STT_LANG│
-     │ override?      │      │     │ (env fallback)  │
-     │ contacts.json  │      │     └────────────────┘
-     │ {"lang": "pl"} │      │
-     └───────┬────────┘      │
-             │               │
-             ▼               ▼
-     ┌────────────────────────────┐
-     │ Twilio STT <Gather>       │
-     │ language = detected locale │
-     │ speech_timeout = 5s       │
-     │ enhanced = true           │
-     └─────────────┬─────────────┘
-                   │
-                   ▼ SpeechResult (text)
-     ┌────────────────────────────┐
-     │ langdetect on text         │
-     │ (if 3+ words)             │
-     │ "Dzień dobry" → pl        │
-     └─────────────┬─────────────┘
-                   │
-                   ▼
-     ┌────────────────────────────┐
-     │ GPT-4o processes text      │
-     │ Responds in caller's lang │
-     │ Returns <meta> with       │
-     │   "lang": "pl"            │
-     └─────────────┬─────────────┘
-                   │
-                   ▼
-     ┌────────────────────────────┐
-     │ If GPT lang ≠ current STT │
-     │ → Switch STT language     │
-     │   for NEXT Gather         │
-     │ e.g. de-CH → pl-PL       │
-     └────────────────────────────┘
+```mermaid
+flowchart TD
+    Start([CALL START]) --> Prefix["Phone prefix detection<br/>+41 → de-CH<br/>+48 → pl-PL<br/>+44 → en-GB<br/>(198 prefixes)"]
+
+    Prefix --> ContactCheck{Contact has<br/>lang override?}
+    ContactCheck -->|Yes| ContactLang["Use contact language<br/>contacts.json<br/>e.g. {lang: pl}"]
+    ContactCheck -->|No| PrefixLang["Use prefix language"]
+
+    ContactLang --> Gather
+    PrefixLang --> Gather
+
+    Gather["Twilio STT Gather<br/>language = detected locale<br/>speech_timeout = 5s<br/>enhanced = true"]
+
+    Gather --> Speech["SpeechResult (text)"]
+    Speech --> Detect["langdetect on text<br/>(if 3+ words)<br/>e.g. Dzień dobry → pl"]
+
+    Detect --> GPT["GPT-4o processes text<br/>Responds in caller's language<br/>Returns meta with lang: pl"]
+
+    GPT --> Switch{GPT lang ≠<br/>current STT?}
+    Switch -->|Yes| Update["Switch STT language<br/>for NEXT Gather<br/>e.g. de-CH → pl-PL"]
+    Switch -->|No| Keep["Keep current STT language"]
+
+    Update --> Gather
+    Keep --> Gather
+
+    style Start fill:#059669,color:#fff
+    style Gather fill:#2563eb,color:#fff
+    style GPT fill:#7c3aed,color:#fff
+    style Switch fill:#d97706,color:#fff
 ```
 
-**Important limitation**: Twilio STT only supports **one language per Gather**. If the caller speaks Polish but STT is set to German, the transcript will be garbled. The language switch only takes effect on the **next** turn.
+> **Important limitation**: Twilio STT only supports **one language per Gather**. If the caller speaks Polish but STT is set to German, the transcript will be garbled. The language switch only takes effect on the **next** turn.
 
 ---
 
 ## TTS Provider Chain
 
-```
-                    Text to speak
-                         │
-                         ▼
-              ┌──────────────────┐
-              │ Check disk cache │
-              │ /tmp/tts_cache/  │
-              │ key=MD5(lang:txt)│
-              └────────┬─────────┘
-                       │
-                  ┌────┴────┐
-                  │ cached? │
-                  └────┬────┘
-                 yes   │   no
-                 │     │    │
-                 │     │    ▼
-                 │     │  ┌──────────────────────┐
-                 │     │  │ ElevenLabs available? │
-                 │     │  │ API key set?          │
-                 │     │  │ Circuit breaker OK?   │
-                 │     │  └──────────┬────────────┘
-                 │     │        yes  │  no
-                 │     │        │    │   │
-                 │     │        ▼    │   │
-                 │     │  ┌──────────┴┐  │
-                 │     │  │ ElevenLabs│  │
-                 │     │  │ API call  │  │
-                 │     │  │ voice_id  │  │
-                 │     │  │ model_id  │  │
-                 │     │  │ (15s tmout│) │
-                 │     │  └─────┬─────┘  │
-                 │     │   ok   │  fail  │
-                 │     │   │    │   │    │
-                 │     │   │    │   ▼    ▼
-                 │     │   │    │  ┌──────────┐
-                 │     │   │    │  │OpenAI TTS│
-                 │     │   │    │  │ tts-1    │
-                 │     │   │    │  │ voice=env│
-                 │     │   │    │  └────┬─────┘
-                 │     │   │    │  ok   │ fail
-                 │     │   │    │  │    │  │
-                 │     │   │    │  │    │  ▼
-                 │     │   │    │  │    │ ┌──────────┐
-                 │     │   │    │  │    │ │Twilio Say│
-                 │     │   │    │  │    │ │(Polly)   │
-                 │     │   │    │  │    │ │last resort│
-                 │     │   │    │  │    │ └──────────┘
-                 │     │   │    │  │    │
-                 ▼     ▼   ▼    ▼  ▼    ▼
-              ┌──────────────────────────────┐
-              │ Save to cache + return URL   │
-              │ PUBLIC_URL/audio/{hash}.mp3  │
-              └──────────────────────────────┘
+```mermaid
+flowchart TD
+    Input["Text to speak"] --> Cache{Disk cache hit?<br/>key = MD5 lang:text}
 
-  Circuit breaker: If ElevenLabs returns 401/403/429,
-  disable for 10 minutes → fall back to OpenAI TTS
+    Cache -->|Yes| Serve["Return cached URL<br/>PUBLIC_URL/audio/hash.mp3"]
+    Cache -->|No| ELCheck{ElevenLabs<br/>available?<br/>API key set?<br/>Circuit breaker OK?}
+
+    ELCheck -->|Yes| EL["ElevenLabs API<br/>voice_id (env)<br/>model_id (env)<br/>timeout: 15s"]
+    ELCheck -->|No| OpenAI
+
+    EL -->|Success| Save["Save to cache<br/>Return URL"]
+    EL -->|Fail| OpenAI["OpenAI TTS<br/>model: tts-1<br/>voice: OPENAI_TTS_VOICE<br/>(default: nova)"]
+
+    OpenAI -->|Success| Save
+    OpenAI -->|Fail| Polly["Twilio Say (Polly)<br/>Last resort<br/>Built-in voice"]
+
+    EL -->|"401/403/429"| CB["Circuit Breaker<br/>Disable ElevenLabs<br/>for 10 minutes"]
+    CB --> OpenAI
+
+    Save --> Done([Audio URL returned])
+    Polly --> Done2([TwiML Say fallback])
+
+    style Input fill:#2563eb,color:#fff
+    style EL fill:#7c3aed,color:#fff
+    style OpenAI fill:#059669,color:#fff
+    style Polly fill:#dc2626,color:#fff
+    style CB fill:#d97706,color:#fff
+    style Done fill:#059669,color:#fff
 ```
 
 ---
 
 ## Signal Communication Flow
 
-```
-┌──────────────┐                    ┌──────────────┐                ┌──────────────┐
-│  Owner's     │                    │  signal-cli   │                │  AVA         │
-│  Signal app  │                    │  REST API     │                │  server      │
-└──────┬───────┘                    └──────┬────────┘                └──────┬───────┘
-       │                                   │                               │
-       │                                   │ ◄── GET /v1/receive ──────── │ (every 3s)
-       │                                   │ ──► [] (no messages) ──────► │
-       │                                   │                               │
-       │ [INCOMING CALL]                   │                               │
-       │                                   │ ◄── POST /v2/send ────────── │
-       │ ◄── "📞 Incoming call..." ────── │                               │
-       │     From: Jan (+48...)            │                               │
-       │     🌐 pl-PL                      │                               │
-       │                                   │                               │
-       │ ── "tell him I'll call back" ──►  │                               │
-       │                                   │ ◄── GET /v1/receive ──────── │
-       │                                   │ ──► [message data] ────────► │
-       │                                   │                               │── queue instruction
-       │                                   │ ◄── POST /v2/send ────────── │   for active call
-       │ ◄── "✅ AVA will tell..." ────── │                               │
-       │                                   │                               │
-       │                                   │                       [next speech turn]
-       │                                   │                               │── inject instruction
-       │                                   │                               │   into GPT context
-       │                                   │                               │
-       │ [AFTER 4 TRANSCRIPT ENTRIES]      │                               │
-       │                                   │ ◄── POST /v2/send ────────── │
-       │ ◄── "📞 Call in progress..." ─── │                               │
-       │     Topic: invoice dispute        │                               │
-       │     last 6 lines of transcript    │                               │
-       │                                   │                               │
-       │ [CALL ENDS]                       │                               │
-       │                                   │ ◄── POST /v2/send ────────── │
-       │ ◄── "📋 Call summary" ────────── │                               │
-       │     Priority + AI summary         │                               │
-       │                                   │ ◄── POST /v2/send ────────── │
-       │ ◄── "Transcript: ..." ────────── │                               │
-       │     Full conversation log         │                               │
+```mermaid
+sequenceDiagram
+    participant Owner as Owner's Signal
+    participant CLI as signal-cli REST API
+    participant AVA as AVA Server
 
-  Slash commands (no active call needed):
-    /ping     → pong + timestamp
-    /status   → uptime, active calls
-    /stats    → call count, memory, cache
-    /calls    → last 5 call records
-    /restart  → restart AVA (requires confirm)
-    /help     → command list
+    loop Every 3 seconds
+        AVA->>CLI: GET /v1/receive
+        CLI-->>AVA: [] (no messages)
+    end
+
+    Note over AVA: INCOMING CALL
+
+    AVA->>CLI: POST /v2/send
+    CLI->>Owner: 📞 Incoming call<br/>From: Jan (+48...)<br/>🌐 pl-PL
+
+    Owner->>CLI: "tell him I'll call back"
+    AVA->>CLI: GET /v1/receive
+    CLI-->>AVA: [message data]
+    Note over AVA: Queue instruction<br/>for active call
+
+    AVA->>CLI: POST /v2/send
+    CLI->>Owner: ✅ AVA will tell the caller
+
+    Note over AVA: Next speech turn:<br/>inject instruction<br/>into GPT context
+
+    Note over AVA: After 4 transcript entries
+
+    AVA->>CLI: POST /v2/send
+    CLI->>Owner: 📞 Call in progress<br/>🟡 Topic: invoice dispute<br/>Last 6 lines of transcript
+
+    Note over AVA: CALL ENDS
+
+    AVA->>CLI: POST /v2/send
+    CLI->>Owner: 📋 Call summary<br/>Priority + AI summary
+
+    AVA->>CLI: POST /v2/send
+    CLI->>Owner: 📝 Full transcript
 ```
+
+### Slash commands (no active call needed)
+
+| Command | Description |
+|---------|-------------|
+| `/ping` | Alive check + timestamp |
+| `/status` | Uptime, active calls, public URL |
+| `/stats` | Call count, memory, TTS cache size |
+| `/calls` | Last 5 call records with topics |
+| `/restart` | Restart AVA (requires `/restart confirm`) |
+| `/help` | Command list |
 
 ---
 
 ## Owner Instruction Injection
 
-```
-Owner sends via Signal          AVA injects into GPT user message
-─────────────────────────────   ────────────────────────────────────
-"tell him I'll call at 3"   →  [RELAY_TO_CALLER: I'll call at 3]
-"ask for order number"       →  [ASK_CALLER: order number]
-"be more formal"             →  [OWNER_INSTRUCTION: be more formal]
-"end"                        →  END_CALL_NOW  (+ force_end flag)
-```
+```mermaid
+flowchart LR
+    subgraph Signal["Owner sends via Signal"]
+        A["tell him I'll call at 3"]
+        B["ask for order number"]
+        C["be more formal"]
+        D["end"]
+    end
 
-GPT sees these markers in the user message and acts on them naturally within its response.
+    subgraph GPT["AVA injects into GPT context"]
+        A2["[RELAY_TO_CALLER: I'll call at 3]"]
+        B2["[ASK_CALLER: order number]"]
+        C2["[OWNER_INSTRUCTION: be more formal]"]
+        D2["END_CALL_NOW + force_end flag"]
+    end
+
+    A --> A2
+    B --> B2
+    C --> C2
+    D --> D2
+
+    GPT --> Response["GPT acts on markers<br/>naturally within response"]
+
+    style Signal fill:#f0f9ff,stroke:#2563eb
+    style GPT fill:#ecfdf5,stroke:#059669
+```
 
 ---
 
@@ -394,6 +349,32 @@ Hello, I'm Maya, Jacek's assistant. How can I help you today?
 | `topic` | Short English description for Signal notifications |
 | `caller_name` | First name if mentioned by caller |
 | `lang` | Two-letter code (pl, en, de) → used to switch STT language |
+
+---
+
+## Docker Compose Services
+
+```mermaid
+graph LR
+    subgraph compose["docker-compose.yml"]
+        ava["ava<br/>FastAPI :8000<br/>Python 3.11"]
+        signal["signal-cli<br/>REST API :8080<br/>Native mode"]
+        caddy["caddy<br/>:80 / :443<br/>Let's Encrypt"]
+        tunnel["cloudflared<br/>Cloudflare Tunnel<br/>outbound only"]
+    end
+
+    ava -->|depends_on| signal
+    caddy -->|depends_on| ava
+    tunnel -->|depends_on| ava
+
+    caddy -.-|"profile: caddy"| note1["Open ports 80/443"]
+    tunnel -.-|"profile: tunnel"| note2["No open ports"]
+
+    style ava fill:#059669,color:#fff
+    style signal fill:#2563eb,color:#fff
+    style caddy fill:#d97706,color:#fff
+    style tunnel fill:#7c3aed,color:#fff
+```
 
 ---
 
@@ -514,17 +495,6 @@ AVA/
 | `end` / `stop` / `koniec` | AVA wraps up the call gracefully |
 | `status` or `?` | Confirms whether a call is active |
 | Any other text | Forwarded as a generic instruction |
-
-### Slash commands (anytime)
-
-| Command | Description |
-|---------|-------------|
-| `/ping` | Alive check + timestamp |
-| `/status` | Uptime, active calls, public URL |
-| `/stats` | Call count, memory, TTS cache size |
-| `/calls` | Last 5 call records with topics |
-| `/restart` | Restart AVA (requires `/restart confirm`) |
-| `/help` | Command list |
 
 ---
 
