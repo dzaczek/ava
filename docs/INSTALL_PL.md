@@ -662,7 +662,7 @@ AVA posiada nastepujace mechanizmy bezpieczenstwa:
 
 | Parametr | Wartosc | Opis |
 |----------|---------|------|
-| `speech_timeout` | 5 s | Cisza po mowie zanim Twilio uruchomi callback |
+| `speech_timeout` | 2 s | Cisza po mowie zanim Twilio uruchomi callback |
 | GPT `max_tokens` | 350 | Maks. dlugosc odpowiedzi na ture |
 | Limit tur | 10 wymian | AVA konczy rozmowe |
 | ElevenLabs timeout | 15 s | Timeout HTTP dla TTS API |
