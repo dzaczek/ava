@@ -663,7 +663,7 @@ AVA includes the following security mechanisms:
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| `speech_timeout` | 5 s | Silence after speech before Twilio fires callback |
+| `speech_timeout` | 2 s | Silence after speech before Twilio fires callback |
 | GPT `max_tokens` | 350 | Max response length per turn |
 | Hard turn limit | 10 exchanges | AVA wraps up the call |
 | ElevenLabs timeout | 15 s | HTTP timeout for TTS API |
