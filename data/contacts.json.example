@@ -1,0 +1,8 @@
+{
+  "+48123456789": "Jan Kowalski",
+  "+48987654321": "Anna Nowak",
+  "+41761234567": {"name": "Hans Müller", "lang": "de"},
+  "+44207123456": {"name": "John Smith", "lang": "en"},
+  "+33612345678": {"name": "Pierre Dupont", "lang": "fr"},
+  "+39312345678": {"name": "Marco Rossi", "lang": "it"}
+}

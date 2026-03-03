@@ -357,39 +357,29 @@ The exact path may vary depending on your carrier. If you run into issues, conta
 
 ### 10. Contact Book (Optional)
 
-To allow AVA to recognise callers by name, create a file at `data/contacts.json`.
+To allow AVA to recognise callers by name, copy the example file and edit it:
 
-Dictionary format (simpler):
+```bash
+cp data/contacts.json.example data/contacts.json
+nano data/contacts.json
+```
+
+The file uses a dictionary format. Values can be a simple name string or an object with `name` and optional `lang`:
 
 ```json
 {
-  "+48123456789": "John Smith",
-  "+48987654321": "Jane Doe"
+  "+48123456789": "Jan Kowalski",
+  "+48987654321": "Anna Nowak",
+  "+41761234567": {"name": "Hans Müller", "lang": "de"},
+  "+44207123456": {"name": "John Smith", "lang": "en"}
 }
 ```
 
-Array format (multiple numbers per contact, with optional language override):
-
-```json
-[
-  {
-    "name": "John Smith",
-    "phones": ["+48123456789", "+48111222333"]
-  },
-  {
-    "name": "Hans Müller",
-    "phones": ["+491234567890"],
-    "lang": "de"
-  }
-]
-```
-
-The optional `lang` field forces the STT language for this contact, overriding phone prefix detection.
+The optional `lang` field forces the STT language for this contact, overriding automatic phone prefix detection. Useful when someone calls from a foreign number but speaks a different language.
 
 Notes:
 
-- Contacts in the contact book can call the Twilio number directly (without forwarding) and AVA will answer
-
+- **Direct call access**: contacts in the contact book can call the Twilio number directly (without forwarding) and AVA will answer. Unknown callers must go through call forwarding.
 - Numbers should be in E.164 format (with country prefix, e.g. `+48`)
 - Bare 9-digit numbers without a prefix are automatically treated as Polish (+48)
 - The file is loaded once at container startup; changes require a restart: `docker compose restart ava`

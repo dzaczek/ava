@@ -357,39 +357,29 @@ Dokladna sciezka moze sie roznic w zaleznosci od operatora. W razie problemow sk
 
 ### 10. Ksiazka kontaktow (opcjonalnie)
 
-Aby AVA rozpoznawala dzwoniacych po imieniu, utworz plik `data/contacts.json`.
+Aby AVA rozpoznawala dzwoniacych po imieniu, skopiuj plik przykladowy i edytuj go:
 
-Format slownikowy (prostszy):
+```bash
+cp data/contacts.json.example data/contacts.json
+nano data/contacts.json
+```
+
+Plik uzywa formatu slownikowego. Wartoscia moze byc prosta nazwa lub obiekt z `name` i opcjonalnym `lang`:
 
 ```json
 {
   "+48123456789": "Jan Kowalski",
-  "+48987654321": "Anna Nowak"
+  "+48987654321": "Anna Nowak",
+  "+41761234567": {"name": "Hans Müller", "lang": "de"},
+  "+44207123456": {"name": "John Smith", "lang": "en"}
 }
 ```
 
-Format tablicowy (wiele numerow na kontakt, z opcjonalnym wymuszeniem jezyka):
-
-```json
-[
-  {
-    "name": "Jan Kowalski",
-    "phones": ["+48123456789", "+48111222333"]
-  },
-  {
-    "name": "Hans Müller",
-    "phones": ["+491234567890"],
-    "lang": "de"
-  }
-]
-```
-
-Opcjonalne pole `lang` wymusza jezyk STT dla danego kontaktu, nadpisujac detekcje z prefiksu telefonicznego.
+Opcjonalne pole `lang` wymusza jezyk STT dla danego kontaktu, nadpisujac automatyczna detekcje z prefiksu telefonicznego. Przydatne gdy ktos dzwoni z zagranicznego numeru, ale mowi w innym jezyku.
 
 Uwagi:
 
-- Kontakty z ksiazki kontaktow moga dzwonic bezposrednio na numer Twilio (bez przekierowania) i AVA odbierze
-
+- **Bezposredni dostep**: kontakty z ksiazki moga dzwonic bezposrednio na numer Twilio (bez przekierowania) i AVA odbierze. Nieznani dzwoniacy musza przejsc przez przekierowanie polaczen.
 - Numery powinny byc w formacie E.164 (z prefiksem krajowym, np. `+48`)
 - 9-cyfrowe numery bez prefiksu sa automatycznie traktowane jako polskie (+48)
 - Plik jest wczytywany przy starcie kontenera; po zmianach wymagany restart: `docker compose restart ava`
