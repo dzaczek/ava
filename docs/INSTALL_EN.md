@@ -105,7 +105,11 @@ Below is a description of each variable:
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `OPENAI_API_KEY` | Your OpenAI API key. | `sk-proj-...` |
-| `OPENAI_MODEL` | GPT model for conversations. Defaults to `gpt-4o`. Use `gpt-4o-mini` for lower costs. | `gpt-4o` |
+| `OPENAI_MODEL` | _(deprecated, use LLM_MODEL)_ GPT model for conversations. | `gpt-4o` |
+| `LLM_PROVIDER` | LLM backend: `openai` (default) or `groq`. | `openai` |
+| `LLM_MODEL` | Model name. Default: `gpt-4o-mini` (OpenAI), `llama-3.3-70b-versatile` (Groq). | `gpt-4o-mini` |
+| `LLM_SUMMARY_MODEL` | Model for call summaries. Defaults to `LLM_MODEL`. | `gpt-4o-mini` |
+| `GROQ_API_KEY` | Groq API key. Required when `LLM_PROVIDER=groq`. | (blank or key) |
 
 #### ElevenLabs TTS (Optional)
 
@@ -113,7 +117,7 @@ Below is a description of each variable:
 |----------|-------------|---------|
 | `ELEVENLABS_API_KEY` | ElevenLabs API key. Leave blank to skip ElevenLabs. | (blank or key) |
 | `ELEVENLABS_VOICE_ID` | Single multilingual voice ID (used for all languages). Browse at https://elevenlabs.io/voice-library | `WAhoMTNdLdMoq1j3wf3I` |
-| `ELEVENLABS_MODEL` | ElevenLabs model. `eleven_multilingual_v2` (best quality) or `eleven_turbo_v2_5` (faster). | `eleven_multilingual_v2` |
+| `ELEVENLABS_MODEL` | ElevenLabs model. `eleven_multilingual_v2` (best quality) or `eleven_turbo_v2_5` (faster, lower latency). | `eleven_turbo_v2_5` |
 | `OPENAI_TTS_VOICE` | Fallback OpenAI TTS voice (used when ElevenLabs is unavailable). Options: alloy, echo, fable, onyx, nova, shimmer. | `nova` |
 
 #### Personalisation
@@ -364,7 +368,7 @@ Dictionary format (simpler):
 }
 ```
 
-Array format (multiple numbers per contact):
+Array format (multiple numbers per contact, with optional language override):
 
 ```json
 [
@@ -373,13 +377,18 @@ Array format (multiple numbers per contact):
     "phones": ["+48123456789", "+48111222333"]
   },
   {
-    "name": "Jane Doe",
-    "phones": ["+48987654321"]
+    "name": "Hans Müller",
+    "phones": ["+491234567890"],
+    "lang": "de"
   }
 ]
 ```
 
+The optional `lang` field forces the STT language for this contact, overriding phone prefix detection.
+
 Notes:
+
+- Contacts in the contact book can call the Twilio number directly (without forwarding) and AVA will answer
 
 - Numbers should be in E.164 format (with country prefix, e.g. `+48`)
 - Bare 9-digit numbers without a prefix are automatically treated as Polish (+48)
@@ -496,7 +505,9 @@ Example contents:
 
 ---
 
-### 15. Signal Commands During a Call
+### 15. Signal Commands
+
+#### During a call
 
 When AVA is handling a call, you can send instructions via Signal:
 
@@ -512,6 +523,21 @@ Polish equivalents also work: `koniec`, `zakoncz`, `powiedz <wiadomosc>`, `zapyt
 
 AVA confirms every instruction with a reply on Signal.
 
+#### Slash commands (no active call needed)
+
+| Command | Description |
+|---------|-------------|
+| `/ping` | Alive check + timestamp |
+| `/status` | Uptime, active calls, public URL |
+| `/stats` | Call count, memory, TTS cache size |
+| `/calls` | Last 5 call records with topics |
+| `/debug` | Latency breakdown (avg from last 10 calls). `/debug -1` for last call detail. |
+| `/billings` | Check API balances (ElevenLabs characters, Twilio balance, OpenAI costs) |
+| `/recording-on` | Start recording calls via Twilio |
+| `/recording-off` | Stop recording calls |
+| `/restart` | Restart AVA (requires `/restart confirm`) |
+| `/help` | Command list |
+
 ---
 
 ### 16. Running Costs
@@ -522,7 +548,7 @@ Estimated costs for a typical 2-minute call:
 |---------|------|---------------|
 | Twilio Voice | $0.013/min | approx. $0.03 |
 | Twilio STT (enhanced) | $0.02/15 s | approx. $0.16 |
-| OpenAI GPT-4o | approx. $0.01/1k tokens | approx. $0.005 |
+| OpenAI GPT-4o-mini | approx. $0.0006/1k tokens | approx. $0.001 |
 | ElevenLabs | from $5/month (30k chars free) | -- |
 | Twilio CNAM Lookup | $0.01/query | $0.01 (unknown numbers only) |
 
@@ -594,6 +620,7 @@ AVA includes the following security mechanisms:
 | Mechanism | Description |
 |-----------|-------------|
 | Twilio signature validation | Every request to `/twilio/*` must carry a valid `X-Twilio-Signature` header. Forged requests are rejected with HTTP 403. |
+| Direct call rejection | Only forwarded calls are answered. Direct calls to the Twilio number are rejected (busy), unless the caller is in `contacts.json`. |
 | Rate limiting | A maximum of 30 requests per minute from a single IP address. Exceeding the limit results in HTTP 429. |
 | Hidden application port | Port 8000 is not exposed to the internet. Traffic passes exclusively through Caddy (HTTPS on port 443). |
 | Signal sender filtering | Signal messages are accepted only from the `SIGNAL_RECIPIENT` number. All others are logged and ignored. |
@@ -629,14 +656,14 @@ AVA includes the following security mechanisms:
 │  │                                                       │       │
 │  │  main.py ─── conversation.py ─── tts.py               │       │
 │  │     │              │                │                  │       │
-│  │  Twilio hooks    GPT-4o loop     ElevenLabs→OpenAI    │       │
+│  │  Twilio hooks    GPT-4o/Groq    ElevenLabs→OpenAI    │       │
 │  │  Rate limiter    Streaming       →Polly fallback      │       │
 │  │  Audio serve     Meta parsing    TTS cache (MD5)      │       │
 │  │  Diagnostics     Summarizer      Circuit breaker      │       │
 │  │     │                                                  │       │
 │  │  owner_channel.py ─── contact_lookup.py ─── i18n.py   │       │
 │  │     │                      │                           │       │
-│  │  Signal notify          contacts.json              8+ langs   │
+│  │  Signal notify          contacts.json             11+ langs   │
 │  │  Signal poll (3s)       CNAM lookup                Signal     │
 │  │  Slash commands         Lang from prefix           templates  │
 │  │  Owner instructions     Per-contact lang                      │
@@ -663,8 +690,8 @@ AVA includes the following security mechanisms:
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| `speech_timeout` | 2 s | Silence after speech before Twilio fires callback |
-| GPT `max_tokens` | 350 | Max response length per turn |
+| `speech_timeout` | 1 s | Silence after speech before Twilio fires callback |
+| LLM `max_tokens` | 180 | Max response length per turn |
 | Hard turn limit | 10 exchanges | AVA wraps up the call |
 | ElevenLabs timeout | 15 s | HTTP timeout for TTS API |
 | ElevenLabs circuit breaker | 10 min | Auto-disable on 401/403/429 |

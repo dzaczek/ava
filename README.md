@@ -11,7 +11,7 @@ graph TB
     subgraph External["EXTERNAL SERVICES"]
         Twilio["Twilio<br/>Voice / PSTN<br/>STT (Gather)<br/>Webhooks"]
         OpenAI["OpenAI<br/>GPT-4o (conversation)<br/>TTS (fallback)"]
-        ElevenLabs["ElevenLabs<br/>TTS (primary voice)<br/>eleven_multilingual_v2"]
+        ElevenLabs["ElevenLabs<br/>TTS (primary voice)<br/>eleven_turbo_v2_5"]
     end
 
     subgraph Docker["DOCKER HOST (your server)"]
@@ -22,11 +22,11 @@ graph TB
 
         subgraph AVA["AVA (FastAPI :8000)"]
             Main["main.py<br/>Call routing<br/>Twilio hooks<br/>Rate limiter<br/>Audio serve<br/>Diagnostics"]
-            Conv["conversation.py<br/>GPT-4o loop<br/>Streaming<br/>Meta parsing<br/>Summarizer"]
+            Conv["conversation.py<br/>GPT-4o / Groq<br/>Streaming<br/>Meta parsing<br/>Summarizer"]
             TTS["tts.py<br/>ElevenLabs → OpenAI<br/>→ Polly (fallback)<br/>Cache (MD5)<br/>Circuit breaker"]
             Owner["owner_channel.py<br/>Signal notify<br/>Signal poll (3s)<br/>Slash commands<br/>Instructions"]
             Contact["contact_lookup.py<br/>contacts.json<br/>Twilio CNAM<br/>E.164 normalize<br/>Lang from prefix"]
-            I18n["i18n.py<br/>8+ languages<br/>Signal templates<br/>Polly voices<br/>Twilio codes"]
+            I18n["i18n.py<br/>11+ languages<br/>Signal templates<br/>Polly voices<br/>Twilio codes"]
         end
 
         SignalCLI["signal-cli :8080<br/>REST API<br/>Native mode<br/>Self-hosted"]
@@ -81,7 +81,7 @@ sequenceDiagram
     participant Caller as Caller's Phone
     participant Twilio as Twilio (PSTN + STT)
     participant AVA as AVA Server
-    participant GPT as OpenAI GPT-4o
+    participant GPT as LLM (GPT-4o / Groq)
     participant TTS as ElevenLabs / OpenAI TTS
     participant Signal as Owner (Signal)
 
@@ -94,7 +94,7 @@ sequenceDiagram
     AVA->>TTS: Generate greeting TTS
     TTS-->>AVA: MP3 audio URL
 
-    AVA->>Twilio: TwiML: Gather + Play<br/>speech_timeout=2s<br/>language=de-CH, enhanced=true
+    AVA->>Twilio: TwiML: Gather + Play<br/>speech_timeout=1s<br/>language=de-CH, enhanced=true
     Twilio->>Caller: Plays greeting audio
 
     loop Max 10 exchanges
@@ -108,7 +108,7 @@ sequenceDiagram
             Note over AVA: Inject [RELAY_TO_CALLER: ...]<br/>into GPT user message
         end
 
-        AVA->>GPT: Stream GPT-4o (user text + instructions)
+        AVA->>GPT: Stream LLM (user text + instructions)
         GPT-->>AVA: Sentence chunks (streaming)
 
         Note over AVA: TTS pipeline: start TTS on<br/>1st sentence while GPT<br/>still generates the rest
@@ -152,9 +152,9 @@ sequenceDiagram
 
 | Parameter | Value | Location | Description |
 |-----------|-------|----------|-------------|
-| `speech_timeout` | **2 s** | `main.py` (all 4 Gather calls) | Silence after speech ends before Twilio fires callback |
+| `speech_timeout` | **1 s** | `main.py` (all 4 Gather calls) | Silence after speech ends before Twilio fires callback |
 | `enhanced` | `true` | `main.py` (Gather) | Use enhanced STT model for better accuracy |
-| GPT `max_tokens` | **350** | `conversation.py` | Max response length per turn |
+| LLM `max_tokens` | **180** | `conversation.py` | Max response length per turn |
 | GPT `temperature` | **0.75** | `conversation.py` | Creativity level for responses |
 | Summary `max_tokens` | **400** | `conversation.py` | Max summary length |
 | Summary `temperature` | **0.2** | `conversation.py` | Low creativity for factual summaries |
@@ -181,20 +181,20 @@ flowchart TD
     Start([CALL START]) --> Prefix["Phone prefix detection<br/>+41 → de-CH<br/>+48 → pl-PL<br/>+44 → en-GB<br/>(52 prefixes)"]
 
     Prefix --> ContactCheck{Contact has<br/>lang override?}
-    ContactCheck -->|Yes| ContactLang["Use contact language<br/>contacts.json<br/>e.g. {lang: pl}"]
+    ContactCheck -->|Yes| ContactLang["Use contact language<br/>contacts.json<br/>e.g. {name: ..., lang: pl}"]
     ContactCheck -->|No| PrefixLang["Use prefix language"]
 
     ContactLang --> Gather
     PrefixLang --> Gather
 
-    Gather["Twilio STT Gather<br/>language = detected locale<br/>speech_timeout = 2s<br/>enhanced = true"]
+    Gather["Twilio STT Gather<br/>language = detected locale<br/>speech_timeout = 1s<br/>enhanced = true"]
 
     Gather --> Speech["SpeechResult (text)"]
     Speech --> Detect["langdetect on text<br/>(if 3+ words)<br/>e.g. Dzień dobry → pl"]
 
     Detect --> GPT["GPT-4o processes text<br/>Responds in caller's language<br/>Returns meta with lang: pl"]
 
-    GPT --> Switch{GPT lang ≠<br/>current STT?}
+    GPT --> Switch{LLM lang ≠<br/>current STT?}
     Switch -->|Yes| Update["Switch STT language<br/>for NEXT Gather<br/>e.g. de-CH → pl-PL"]
     Switch -->|No| Keep["Keep current STT language"]
 
@@ -295,6 +295,10 @@ sequenceDiagram
 | `/status` | Uptime, active calls, public URL |
 | `/stats` | Call count, memory, TTS cache size |
 | `/calls` | Last 5 call records with topics |
+| `/debug` | Latency breakdown (avg from last 10 calls). Use `/debug -1`, `/debug -2` for per-call detail. |
+| `/billings` | Check API balances (ElevenLabs chars, Twilio balance, OpenAI costs) |
+| `/recording-on` | Start recording calls (Twilio recording) |
+| `/recording-off` | Stop recording calls |
 | `/restart` | Restart AVA (requires `/restart confirm`) |
 | `/help` | Command list |
 
@@ -391,13 +395,16 @@ graph LR
 | `SIGNAL_SENDER_NUMBER` | (required) | Bot's Signal number |
 | `SIGNAL_RECIPIENT` | (required) | Your personal Signal number |
 | `SIGNAL_LANG` | `en` | Signal notification language (`en` / `pl`) |
-| **OpenAI** | | |
+| **LLM** | | |
 | `OPENAI_API_KEY` | (required) | OpenAI API key |
-| `OPENAI_MODEL` | `gpt-4o` | GPT model for conversation |
+| `LLM_PROVIDER` | `openai` | LLM backend: `openai` or `groq` |
+| `LLM_MODEL` | auto | Model name (default: `gpt-4o-mini` for OpenAI, `llama-3.3-70b-versatile` for Groq) |
+| `LLM_SUMMARY_MODEL` | auto | Model for call summaries (default: same as `LLM_MODEL`) |
+| `GROQ_API_KEY` | (empty) | Groq API key (required when `LLM_PROVIDER=groq`) |
 | **ElevenLabs** | | |
 | `ELEVENLABS_API_KEY` | (empty) | Leave blank to skip ElevenLabs |
 | `ELEVENLABS_VOICE_ID` | `WAhoMTNdLdMoq1j3wf3I` | Single multilingual voice ID |
-| `ELEVENLABS_MODEL` | `eleven_multilingual_v2` | TTS model |
+| `ELEVENLABS_MODEL` | `eleven_multilingual_v2` | TTS model (`eleven_turbo_v2_5` for lower latency) |
 | **OpenAI TTS** | | |
 | `OPENAI_TTS_VOICE` | `nova` | Fallback voice (alloy/echo/fable/onyx/nova/shimmer) |
 | **Language** | | |
@@ -461,6 +468,7 @@ AVA/
 | Mechanism | Description |
 |-----------|-------------|
 | Twilio signature validation | Every `/twilio/*` request must have valid `X-Twilio-Signature`. Invalid → 403. |
+| Direct call rejection | Only forwarded calls are answered. Direct calls to the Twilio number are rejected (busy), unless the caller is in `contacts.json`. |
 | Rate limiting | 30 requests/min per IP. Exceeding → 429. |
 | Hidden app port | Port 8000 internal only. Traffic via Caddy HTTPS (:443) or Cloudflare Tunnel. |
 | Signal sender filter | Only messages from `SIGNAL_RECIPIENT` are processed. Others are logged and ignored. |
@@ -476,11 +484,11 @@ AVA/
 |---------|------|--------------------|
 | Twilio Voice | $0.013/min | ~$0.03 |
 | Twilio STT (enhanced) | $0.02/15s | ~$0.16 |
-| OpenAI GPT-4o | ~$0.01/1k tokens | ~$0.005 |
+| OpenAI GPT-4o-mini | ~$0.0006/1k tokens | ~$0.001 |
 | ElevenLabs | from $5/month | (30k chars free tier) |
 | Twilio CNAM Lookup | $0.01/query | $0.01 (unknown numbers only) |
 
-**Typical call: ~$0.20–0.25**
+**Typical call: ~$0.20–0.25** (with GPT-4o-mini costs are significantly lower)
 
 ---
 
