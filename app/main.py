@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urljoin
 
+import httpx
 from fastapi import FastAPI, Form, Request, BackgroundTasks, HTTPException, Depends
 from fastapi.responses import Response, FileResponse
 from twilio.request_validator import RequestValidator
@@ -64,6 +65,53 @@ CALLS_DIR = Path("/data/calls")
 # ── Diagnostics tracking ─────────────────────────────────────────────────────
 _start_time = time.monotonic()
 _call_count = 0
+_recording_state = {"enabled": False}
+
+# Per-call: timestamp when we sent the TwiML response back to Twilio
+_response_sent_at: dict[str, float] = {}
+
+# Last N calls timing data for /debug
+_last_call_timings: list[dict] = []  # circular buffer, max 10
+
+# ── API usage / cost tracking ────────────────────────────────────────────────
+# Approximate pricing ($/unit)
+GPT4O_INPUT  = 2.50 / 1_000_000   # $/token
+GPT4O_OUTPUT = 10.0 / 1_000_000   # $/token
+ELEVENLABS   = 0.30 / 1_000       # $/char
+OPENAI_TTS   = 0.015 / 1_000      # $/char
+TWILIO_VOICE = 0.02               # $/min (approx)
+TWILIO_STT   = 0.08               # $/min (enhanced)
+
+_total_usage: dict[str, float] = {
+    "gpt_prompt_tokens": 0,
+    "gpt_completion_tokens": 0,
+    "summary_prompt_tokens": 0,
+    "summary_completion_tokens": 0,
+    "tts_elevenlabs_chars": 0,
+    "tts_openai_chars": 0,
+    "twilio_minutes": 0.0,
+}
+
+def _empty_call_usage() -> dict:
+    return {
+        "gpt_prompt_tokens": 0, "gpt_completion_tokens": 0,
+        "summary_prompt_tokens": 0, "summary_completion_tokens": 0,
+        "tts_elevenlabs_chars": 0, "tts_openai_chars": 0,
+        "twilio_minutes": 0.0,
+    }
+
+def _compute_cost(u: dict) -> float:
+    gpt_in = u.get("gpt_prompt_tokens", 0) + u.get("summary_prompt_tokens", 0)
+    gpt_out = u.get("gpt_completion_tokens", 0) + u.get("summary_completion_tokens", 0)
+    twilio_min = u.get("twilio_minutes", 0)
+    return (
+        gpt_in * GPT4O_INPUT
+        + gpt_out * GPT4O_OUTPUT
+        + u.get("tts_elevenlabs_chars", 0) * ELEVENLABS
+        + u.get("tts_openai_chars", 0) * OPENAI_TTS
+        + twilio_min * TWILIO_VOICE
+        + twilio_min * TWILIO_STT
+    )
 
 # ── Twilio webhook signature validation ──────────────────────────────────────
 
@@ -90,7 +138,7 @@ async def verify_twilio_signature(request: Request):
     logger.debug(f"Twilio sig check: url={url} sig={signature[:20]}... params={sorted(form_data.keys())}")
 
     if not _twilio_validator.validate(url, form_data, signature):
-        logger.warning(f"Rejected invalid Twilio signature from {request.client.host} url={url}")
+        logger.warning(f"Rejected Twilio sig: url={url} sig={signature[:20]}... params={sorted(form_data.keys())} token={_twilio_token[:8]}...")
         raise HTTPException(status_code=403, detail="Invalid signature")
 
 
@@ -212,6 +260,24 @@ def _register_slash_commands():
                 except ValueError:
                     pass
             lines.append(f"  {sid[:8]}... from {caller}{elapsed}")
+
+        # Recording
+        lines.append(f"Recording: {'🔴 ON' if _recording_state['enabled'] else '⚪ OFF'}")
+
+        # TTS cache
+        tts_files = list(AUDIO_DIR.glob("*.mp3")) if AUDIO_DIR.exists() else []
+        tts_size = sum(f.stat().st_size for f in tts_files) / (1024 * 1024)
+        lines.append(f"TTS cache: {len(tts_files)} files ({tts_size:.1f} MB)")
+
+        # ElevenLabs circuit breaker
+        el_remaining = tts._elevenlabs_disabled_until - time.monotonic()
+        if el_remaining > 0:
+            lines.append(f"ElevenLabs: ⚠️ disabled ({int(el_remaining)}s remaining)")
+        else:
+            lines.append(f"ElevenLabs: ✅ active" if tts.elevenlabs_key else "ElevenLabs: ❌ no key")
+
+        # Stats
+        lines.append(f"Total calls: {_call_count}")
         lines.append(f"Signal: connected")
         if _public_url:
             lines.append(f"Public URL: {_public_url}")
@@ -237,7 +303,7 @@ def _register_slash_commands():
         except Exception:
             rss_mb = 0.0
 
-        return "\n".join([
+        lines = [
             "AVA Statistics",
             "━━━━━━━━━━━━━━━━",
             f"Uptime: {_format_uptime()}",
@@ -246,7 +312,48 @@ def _register_slash_commands():
             f"TTS cache: {tts_count} files ({tts_size_mb:.1f} MB)",
             f"Memory (RSS): {rss_mb:.1f} MB",
             f"Python: {platform.python_version()}",
-        ])
+        ]
+
+        # Session API usage & costs
+        u = _total_usage
+        gpt_in = u["gpt_prompt_tokens"] + u["summary_prompt_tokens"]
+        gpt_out = u["gpt_completion_tokens"] + u["summary_completion_tokens"]
+        gpt_cost = gpt_in * GPT4O_INPUT + gpt_out * GPT4O_OUTPUT
+        el_cost = u["tts_elevenlabs_chars"] * ELEVENLABS
+        oai_tts_cost = u["tts_openai_chars"] * OPENAI_TTS
+        twilio_cost = u["twilio_minutes"] * (TWILIO_VOICE + TWILIO_STT)
+        total = gpt_cost + el_cost + oai_tts_cost + twilio_cost
+
+        lines.append("")
+        lines.append("API Usage (session)")
+        lines.append("───────────────────")
+        lines.append(f"GPT-4o: {gpt_in + gpt_out} tok (${gpt_cost:.4f})")
+        lines.append(f"ElevenLabs TTS: {u['tts_elevenlabs_chars']} chars (${el_cost:.4f})")
+        lines.append(f"OpenAI TTS: {u['tts_openai_chars']} chars (${oai_tts_cost:.4f})")
+        lines.append(f"Twilio: {u['twilio_minutes']:.1f} min (${twilio_cost:.4f})")
+        lines.append(f"Total est: ${total:.4f}")
+
+        # Per-call costs from saved files (last 10)
+        recent_files = sorted(CALLS_DIR.glob("*.json"), reverse=True)[:10] if CALLS_DIR.exists() else []
+        if recent_files:
+            lines.append("")
+            lines.append(f"Last {len(recent_files)} calls")
+            lines.append("───────────────────")
+            cumulative = 0.0
+            for f in recent_files:
+                try:
+                    data = json.loads(f.read_text(encoding="utf-8"))
+                    usage = data.get("usage") or {}
+                    cost = usage.get("estimated_cost", 0)
+                    cumulative += cost
+                    caller = data.get("caller_name") or data.get("caller_number", "?")
+                    dur = usage.get("twilio_minutes", 0)
+                    lines.append(f"  {caller}: ${cost:.4f} ({dur:.1f}min)")
+                except Exception:
+                    lines.append(f"  (error reading {f.name})")
+            lines.append(f"  Total (last {len(recent_files)}): ${cumulative:.4f}")
+
+        return "\n".join(lines)
 
     async def _cmd_calls(_args: str) -> str:
         if not CALLS_DIR.exists():
@@ -291,16 +398,277 @@ def _register_slash_commands():
         _restart_pending["ts"] = time.monotonic()
         return "Are you sure? Send `/restart confirm` within 30s to confirm."
 
+    async def _cmd_recording_on(_args: str) -> str:
+        _recording_state["enabled"] = True
+        return "🔴 Recording ON — next calls will be recorded."
+
+    async def _cmd_recording_off(_args: str) -> str:
+        _recording_state["enabled"] = False
+        return "⚪ Recording OFF — calls will not be recorded."
+
+    def _fmt_turn(t: dict) -> str:
+        """Format a single turn timing line."""
+        rt = t.get("twilio_roundtrip")
+        rt_str = f"{rt}s" if rt else "n/a"
+        return (
+            f"  T{t['turn']}:\n"
+            f"    Twilio RT: {rt_str} (audio+speech+1s+STT)\n"
+            f"    LLM:  {t['llm_total']}s (TTFT {t['llm_first_token']}s)\n"
+            f"    TTS:  {t['tts_total']}s (1st={t.get('tts_first', '?')}s rest={t.get('tts_rest', '?')}s) [{t.get('tts_provider', '?')}]\n"
+            f"    Proc: {t['processing']}s"
+        )
+
+    def _fmt_call_detail(call: dict) -> list[str]:
+        """Format detailed timing for one call."""
+        turns = call["turns"]
+        n = len(turns)
+        lines = []
+        caller = call.get("caller", "?")
+        lines.append(f"📞 {caller} ({call.get('time', '?')}, {n} turns, {call.get('llm_provider', '?')})")
+
+        for t in turns:
+            lines.append(_fmt_turn(t))
+
+        if n > 0:
+            lines.append(f"  ── averages ({n} turns) ──")
+            lines.append(
+                f"  Twilio RT: {_avg(turns, 'twilio_roundtrip')}s\n"
+                f"  LLM:      {_avg(turns, 'llm_total')}s (TTFT {_avg(turns, 'llm_first_token')}s)\n"
+                f"  TTS:      {_avg(turns, 'tts_total')}s (1st={_avg(turns, 'tts_first')}s)\n"
+                f"  Proc:     {_avg(turns, 'processing')}s"
+            )
+        return lines
+
+    def _avg(turns: list[dict], key: str) -> str:
+        vals = [t.get(key) for t in turns if t.get(key) is not None]
+        return str(round(sum(vals) / len(vals), 2)) if vals else "n/a"
+
+    async def _cmd_debug(_args: str) -> str:
+        lines = [
+            "AVA Latency Debug",
+            "━━━━━━━━━━━━━━━━━━",
+            f"LLM: {conversation.model} ({os.getenv('LLM_PROVIDER', 'openai')})",
+            f"TTS: {'ElevenLabs' if tts.elevenlabs_key else 'OpenAI TTS'}",
+            f"speech_timeout: 1s",
+            "",
+        ]
+
+        arg = _args.strip()
+
+        # /debug -N → show Nth previous call in detail
+        if arg.lstrip("-").isdigit():
+            idx = int(arg)
+            if idx > 0:
+                idx = -idx
+
+            all_calls = list(_last_call_timings)
+            for sid, state in active_calls.items():
+                turns = state.get("timings", [])
+                if turns:
+                    all_calls.append({
+                        "call_sid": sid[:12],
+                        "caller": state.get("caller_name") or state.get("from", "?"),
+                        "time": "🔴 active",
+                        "turns": turns,
+                        "llm_provider": conversation.model,
+                    })
+
+            if not all_calls:
+                lines.append("No timing data yet.")
+                return "\n".join(lines)
+
+            try:
+                call = all_calls[idx]
+            except IndexError:
+                lines.append(f"Only {len(all_calls)} call(s) available (use -1 to -{len(all_calls)}).")
+                return "\n".join(lines)
+
+            lines.extend(_fmt_call_detail(call))
+            return "\n".join(lines)
+
+        # /debug (no args) → overview
+        for sid, state in active_calls.items():
+            turns = state.get("timings", [])
+            if turns:
+                caller = state.get("caller_name") or state.get("from", "?")
+                lines.append(f"🔴 Active: {caller} ({len(turns)} turns)")
+                for t in turns[-2:]:
+                    lines.append(_fmt_turn(t))
+                lines.append("")
+
+        if not _last_call_timings:
+            lines.append("No completed calls yet.")
+        else:
+            for call in reversed(_last_call_timings[-3:]):
+                turns = call["turns"]
+                n = len(turns)
+                caller = call.get("caller", "?")
+                lines.append(
+                    f"📞 {caller} ({call.get('time', '?')}, {n}t): "
+                    f"RT={_avg(turns, 'twilio_roundtrip')}s "
+                    f"LLM={_avg(turns, 'llm_total')}s "
+                    f"TTS={_avg(turns, 'tts_total')}s "
+                    f"Proc={_avg(turns, 'processing')}s"
+                )
+
+        # Global averages
+        all_turns = []
+        for call in _last_call_timings[-10:]:
+            all_turns.extend(call.get("turns", []))
+
+        if all_turns:
+            n_calls = min(len(_last_call_timings), 10)
+            lines.append("")
+            lines.append(f"📊 Avg last {n_calls} calls ({len(all_turns)} turns)")
+            lines.append("───────────────────")
+            lines.append(f"  Twilio RT:     {_avg(all_turns, 'twilio_roundtrip')}s")
+            lines.append(f"    (= audio play + caller speech + 1s timeout + STT)")
+            lines.append(f"  LLM TTFT:      {_avg(all_turns, 'llm_first_token')}s")
+            lines.append(f"  LLM total:     {_avg(all_turns, 'llm_total')}s")
+            lines.append(f"  TTS 1st chunk: {_avg(all_turns, 'tts_first')}s")
+            lines.append(f"  TTS total:     {_avg(all_turns, 'tts_total')}s")
+            lines.append(f"  Processing:    {_avg(all_turns, 'processing')}s (LLM+TTS)")
+            # Caller perceived delay = processing time (they already waited through roundtrip)
+            avg_proc = sum(t.get("processing", 0) for t in all_turns) / len(all_turns)
+            lines.append(f"  Caller wait:   ~{round(avg_proc, 2)}s (after speaking)")
+
+        lines.append("")
+        lines.append("Use /debug -1, -2... for per-call detail")
+
+        return "\n".join(lines)
+
+    async def _cmd_billings(_args: str) -> str:
+        lines = ["AVA Billings", "━━━━━━━━━━━━"]
+        _http = httpx.AsyncClient(timeout=10)
+        try:
+            # ── ElevenLabs ──
+            el_key = os.getenv("ELEVENLABS_API_KEY")
+            if el_key:
+                try:
+                    resp = await _http.get(
+                        "https://api.elevenlabs.io/v1/user/subscription",
+                        headers={"xi-api-key": el_key},
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        used = data.get("character_count", 0)
+                        limit = data.get("character_limit", 0)
+                        remaining = limit - used
+                        tier = data.get("tier", "?")
+                        next_reset = data.get("next_character_count_reset_unix")
+                        reset_str = ""
+                        if next_reset:
+                            reset_dt = datetime.fromtimestamp(next_reset, tz=timezone.utc)
+                            reset_str = f"\n  Reset: {reset_dt.strftime('%Y-%m-%d')}"
+                        lines.append("")
+                        lines.append(f"🔊 ElevenLabs ({tier})")
+                        lines.append(f"  {used:,} / {limit:,} chars used")
+                        lines.append(f"  Remaining: {remaining:,} chars ({remaining*100//limit if limit else 0}%)")
+                        lines.append(f"  Model: {os.getenv('ELEVENLABS_MODEL', '?')}")
+                        if reset_str:
+                            lines.append(reset_str)
+                    elif resp.status_code == 401:
+                        lines.append("")
+                        lines.append("🔊 ElevenLabs")
+                        lines.append("  ⚠️ API key missing 'user_read' permission")
+                        lines.append("  Add it at elevenlabs.io → Profile → API Keys")
+                    else:
+                        lines.append(f"\n🔊 ElevenLabs: error {resp.status_code}")
+                except Exception as e:
+                    lines.append(f"\n🔊 ElevenLabs: {e}")
+            else:
+                lines.append("\n🔊 ElevenLabs: no API key")
+
+            # ── Twilio ──
+            twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
+            twilio_token = os.getenv("TWILIO_AUTH_TOKEN")
+            if twilio_sid and twilio_token:
+                try:
+                    resp = await _http.get(
+                        f"https://api.twilio.com/2010-04-01/Accounts/{twilio_sid}/Balance.json",
+                        auth=(twilio_sid, twilio_token),
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        balance = data.get("balance", "?")
+                        currency = data.get("currency", "USD")
+                        lines.append("")
+                        lines.append(f"📞 Twilio")
+                        lines.append(f"  Balance: {currency} {balance}")
+                    else:
+                        lines.append(f"\n📞 Twilio: error {resp.status_code}")
+                except Exception as e:
+                    lines.append(f"\n📞 Twilio: {e}")
+            else:
+                lines.append("\n📞 Twilio: no credentials")
+
+            # ── OpenAI ──
+            oai_key = os.getenv("OPENAI_API_KEY")
+            if oai_key:
+                oai_ok = False
+                # Try organization costs endpoint (requires api.usage.read scope)
+                try:
+                    month_start = datetime.utcnow().strftime("%Y-%m-01")
+                    resp = await _http.get(
+                        f"https://api.openai.com/v1/organization/costs?start_time={month_start}T00:00:00Z&limit=30",
+                        headers={"Authorization": f"Bearer {oai_key}"},
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        results = data.get("data", [])
+                        total_cents = sum(
+                            b.get("results", [{}])[0].get("amount", {}).get("value", 0)
+                            for b in results if b.get("results")
+                        )
+                        total_usd = total_cents / 100.0
+                        lines.append("")
+                        lines.append(f"🤖 OpenAI")
+                        lines.append(f"  This month: ${total_usd:.2f}")
+                        oai_ok = True
+                except Exception:
+                    pass
+
+                if not oai_ok:
+                    lines.append("")
+                    lines.append(f"🤖 OpenAI")
+                    lines.append(f"  ⚠️ Key missing 'api.usage.read' scope")
+                    lines.append(f"  Add scope at platform.openai.com → API Keys")
+                    # Show our tracked usage instead
+                    u = _total_usage
+                    gpt_cost = (
+                        (u["gpt_prompt_tokens"] + u["summary_prompt_tokens"]) * GPT4O_INPUT
+                        + (u["gpt_completion_tokens"] + u["summary_completion_tokens"]) * GPT4O_OUTPUT
+                    )
+                    lines.append(f"  AVA tracked: ${gpt_cost:.4f} (this session)")
+            else:
+                lines.append("\n🤖 OpenAI: no API key")
+
+            # ── Session usage from AVA ──
+            u = _total_usage
+            total_cost = _compute_cost(u)
+            if total_cost > 0:
+                lines.append("")
+                lines.append(f"📊 AVA session usage: ${total_cost:.4f}")
+
+        finally:
+            await _http.aclose()
+
+        return "\n".join(lines)
+
     async def _cmd_help(_args: str) -> str:
         return "\n".join([
             "AVA Signal Commands",
             "━━━━━━━━━━━━━━━━━━━━",
-            "/ping     — alive check",
-            "/status   — system status & active calls",
-            "/stats    — statistics (calls, memory, cache)",
-            "/calls    — recent call history",
-            "/restart  — restart AVA process",
-            "/help     — this message",
+            "/ping          — alive check",
+            "/status        — system status & active calls",
+            "/stats         — statistics (calls, memory, cache, costs)",
+            "/calls         — recent call history",
+            "/debug [-N]    — latency breakdown per sub-service",
+            "/billings      — check API balances",
+            "/recording-on  — start recording calls",
+            "/recording-off — stop recording calls",
+            "/restart       — restart AVA process",
+            "/help          — this message",
             "",
             "Call commands (no / prefix):",
             "status    — is a call active?",
@@ -313,6 +681,10 @@ def _register_slash_commands():
     owner.register_slash("/status", _cmd_status)
     owner.register_slash("/stats", _cmd_stats)
     owner.register_slash("/calls", _cmd_calls)
+    owner.register_slash("/debug", _cmd_debug)
+    owner.register_slash("/billings", _cmd_billings)
+    owner.register_slash("/recording-on", _cmd_recording_on)
+    owner.register_slash("/recording-off", _cmd_recording_off)
     owner.register_slash("/restart", _cmd_restart)
     owner.register_slash("/help", _cmd_help)
 
@@ -350,15 +722,28 @@ async def incoming_call(
     From: str   = Form(...),
     To: str     = Form(...),
     CallStatus: str = Form(...),
+    ForwardedFrom: Optional[str] = Form(None),
 ):
     """
     Twilio calls this endpoint when a forwarded call arrives.
     Greets the caller and starts the conversation loop.
     Sends an immediate Signal notification to the owner.
+    Only accepts forwarded calls – direct calls to the Twilio number are rejected.
     """
+    # Accept forwarded calls OR direct calls from known contacts
+    if not ForwardedFrom and not contacts.is_known(From):
+        logger.warning(f"Rejected direct call {CallSid} from {From} (not forwarded, not in contacts)")
+        response = VoiceResponse()
+        response.reject(reason="busy")
+        return Response(content=str(response), media_type="text/xml")
+
+    if ForwardedFrom:
+        logger.info(f"📞 Incoming call {CallSid} forwarded from {ForwardedFrom}")
+    else:
+        logger.info(f"📞 Incoming direct call {CallSid} from known contact {From}")
+
     global _call_count
     _call_count += 1
-    logger.info(f"📞 Incoming call {CallSid}")
 
     caller_name = await contacts.lookup(From)
     display     = caller_name or From
@@ -394,14 +779,14 @@ async def incoming_call(
 
     # Greet in the caller's detected language
     greeting  = i18n.GREETINGS.get(lang_code, i18n.GREETINGS["en"])
-    audio_url = await tts.generate_and_upload(greeting, lang_code)
+    audio_url = await tts.generate_and_upload(greeting, lang_code, call_sid=CallSid)
 
     response = VoiceResponse()
     gather   = Gather(
         input="speech",
         action=f"/twilio/process_speech/{CallSid}",
         method="POST",
-        speech_timeout="5",
+        speech_timeout="1",
         language=twilio_locale,
         enhanced=True,
     )
@@ -412,6 +797,7 @@ async def incoming_call(
 
     response.append(gather)
     response.redirect(f"/twilio/no_input/{CallSid}", method="POST")
+    _response_sent_at[CallSid] = time.monotonic()
     return Response(content=str(response), media_type="text/xml")
 
 
@@ -430,7 +816,13 @@ async def process_speech(
     Called after every caller utterance.
     Pulls pending Signal instructions, generates AI response, returns TwiML.
     """
+    _webhook_received = time.monotonic()
     logger.info(f"Speech [{call_sid[:12]}]: \"{SpeechResult}\" lang={LanguageCode}")
+
+    # Twilio round-trip: time from our last response to this webhook
+    # Includes: audio playback + caller speech + speech_timeout(1s) + Twilio STT
+    _prev_sent = _response_sent_at.pop(call_sid, None)
+    _twilio_roundtrip = round(_webhook_received - _prev_sent, 3) if _prev_sent else None
 
     call_state = active_calls.get(call_sid, {})
     if not SpeechResult:
@@ -457,9 +849,12 @@ async def process_speech(
         logger.info(f"Injecting {len(owner_instructions)} owner instruction(s)")
 
     # Stream GPT-4o and pipeline TTS on first sentence for lower latency
+    _turn_start = time.monotonic()
     sentences = []
     ai = {"text": "", "end_call": False, "urgency": "low", "topic": "", "caller_name_detected": ""}
     first_audio_url = None
+    _tts_first_start = None
+    _tts_first_end = None
 
     async for part in conversation.respond_streaming(
         call_sid=call_sid,
@@ -472,9 +867,19 @@ async def process_speech(
             sentences.append(part["text"])
             # Start TTS on the FIRST sentence immediately while GPT-4o continues
             if first_audio_url is None:
-                first_audio_url = await tts.generate_and_upload(part["text"], lang_code)
+                _tts_first_start = time.monotonic()
+                first_audio_url = await tts.generate_and_upload(part["text"], lang_code, call_sid=call_sid)
+                _tts_first_end = time.monotonic()
         elif part["type"] == "done":
             ai = part
+
+    _llm_done = time.monotonic()
+
+    # Accumulate GPT token usage for this turn
+    if call_sid in active_calls:
+        u = active_calls[call_sid].setdefault("usage", _empty_call_usage())
+        u["gpt_prompt_tokens"] += ai.get("prompt_tokens", 0)
+        u["gpt_completion_tokens"] += ai.get("completion_tokens", 0)
 
     # If GPT switched language (e.g. caller asked for German), update detection
     if ai.get("lang") and ai["lang"] in i18n.TWILIO_LANG_CODES:
@@ -499,11 +904,51 @@ async def process_speech(
         background_tasks.add_task(_send_live_update, call_sid, ai)
 
     # Generate TTS for remaining sentences (first one is already done)
+    _tts_rest_start = time.monotonic()
     audio_urls = [first_audio_url] if first_audio_url else []
     for sentence in sentences[1:]:
-        url = await tts.generate_and_upload(sentence, lang_code)
+        url = await tts.generate_and_upload(sentence, lang_code, call_sid=call_sid)
         if url:
             audio_urls.append(url)
+    _tts_rest_end = time.monotonic()
+
+    # Collect and store timing data for this turn
+    _turn_total = round(time.monotonic() - _turn_start, 3)
+    llm_timing = ai.get("timing", {})
+    tts_timings = tts.get_timings(call_sid) if call_sid else []
+    tts_first = round((_tts_first_end - _tts_first_start), 3) if _tts_first_start and _tts_first_end else 0
+    tts_rest = round((_tts_rest_end - _tts_rest_start), 3) if len(sentences) > 1 else 0
+    tts_total = round(sum(t["latency"] for t in tts_timings), 3) if tts_timings else 0
+    tts_provider = tts_timings[0]["provider"] if tts_timings else ("elevenlabs" if tts.elevenlabs_key else "openai_tts")
+
+    transcript = active_calls.get(call_sid, {}).get("transcript", [])
+
+    turn_timing = {
+        "turn": len(transcript) // 2,
+        "twilio_roundtrip": _twilio_roundtrip,       # response sent → webhook received (audio+speech+timeout+STT)
+        "processing": _turn_total,                    # our processing time (LLM + TTS)
+        "llm_first_token": llm_timing.get("llm_first_token", 0),
+        "llm_total": llm_timing.get("llm_total", 0),
+        "tts_first": tts_first,
+        "tts_rest": tts_rest,
+        "tts_total": tts_total,
+        "tts_provider": tts_provider,
+        "tts_calls": len(tts_timings),
+        "llm_provider": conversation.model,
+    }
+    if call_sid in active_calls:
+        active_calls[call_sid].setdefault("timings", []).append(turn_timing)
+
+    _rt = _twilio_roundtrip or "?"
+    logger.info(
+        f"⏱ Timing [{call_sid[:12]}]: "
+        f"twilio_rt={_rt}s (audio+speech+2s_timeout+STT) "
+        f"processing={_turn_total}s "
+        f"llm_ttft={llm_timing.get('llm_first_token', '?')}s "
+        f"llm={llm_timing.get('llm_total', '?')}s "
+        f"tts={tts_total}s (1st={tts_first}s rest={tts_rest}s) "
+        f"[{tts_provider}]"
+    )
 
     # Build TwiML
     response = VoiceResponse()
@@ -523,7 +968,7 @@ async def process_speech(
             input="speech",
             action=f"/twilio/process_speech/{call_sid}",
             method="POST",
-            speech_timeout="5",
+            speech_timeout="1",
             language=next_locale,
             enhanced=True,
         )
@@ -535,6 +980,7 @@ async def process_speech(
         response.append(gather)
         response.redirect(f"/twilio/no_input/{call_sid}", method="POST")
 
+    _response_sent_at[call_sid] = time.monotonic()
     return Response(content=str(response), media_type="text/xml")
 
 
@@ -551,12 +997,12 @@ async def no_input(call_sid: str, background_tasks: BackgroundTasks):
         input="speech",
         action=f"/twilio/process_speech/{call_sid}",
         method="POST",
-        speech_timeout="5",
+        speech_timeout="1",
         language=_twilio_lang(lang_code),
         enhanced=True,
     )
     prompt    = i18n.NO_INPUT_PROMPTS.get(lang_code, i18n.NO_INPUT_PROMPTS["en"])
-    audio_url = await tts.generate_and_upload(prompt, lang_code)
+    audio_url = await tts.generate_and_upload(prompt, lang_code, call_sid=call_sid)
     if audio_url:
         gather.play(audio_url)
     else:
@@ -564,7 +1010,7 @@ async def no_input(call_sid: str, background_tasks: BackgroundTasks):
 
     response.append(gather)
     goodbye = i18n.NO_INPUT_GOODBYES.get(lang_code, i18n.NO_INPUT_GOODBYES["en"])
-    goodbye_url = await tts.generate_and_upload(goodbye, lang_code)
+    goodbye_url = await tts.generate_and_upload(goodbye, lang_code, call_sid=call_sid)
     if goodbye_url:
         response.play(goodbye_url)
     else:
@@ -572,6 +1018,7 @@ async def no_input(call_sid: str, background_tasks: BackgroundTasks):
     response.hangup()
 
     background_tasks.add_task(_send_final_summary, call_sid)
+    _response_sent_at[call_sid] = time.monotonic()
     return Response(content=str(response), media_type="text/xml")
 
 
@@ -588,6 +1035,12 @@ async def call_status(
     logger.info(f"Call status [{CallSid[:12]}]: {CallStatus} ({CallDuration}s)")
 
     if CallStatus in {"completed", "failed", "busy", "no-answer", "canceled"}:
+        # Record Twilio call duration for cost tracking
+        if CallDuration and CallSid in active_calls:
+            minutes = int(CallDuration) / 60.0
+            u = active_calls[CallSid].setdefault("usage", _empty_call_usage())
+            u["twilio_minutes"] = minutes
+
         state = active_calls.get(CallSid, {})
         if state and not state.get("summary_sent"):
             background_tasks.add_task(_send_final_summary, CallSid)
@@ -603,6 +1056,7 @@ async def _delayed_cleanup(call_sid: str):
     """Clean up call state after a delay, without blocking the HTTP handler."""
     await asyncio.sleep(90)
     active_calls.pop(call_sid, None)
+    _response_sent_at.pop(call_sid, None)
     owner.clear_active_call(call_sid)
     conversation.cleanup(call_sid)
 
@@ -650,16 +1104,17 @@ async def _clarification_response(call_sid: str, call_state: dict):
         input="speech",
         action=f"/twilio/process_speech/{call_sid}",
         method="POST",
-        speech_timeout="5",
+        speech_timeout="1",
         language=_twilio_lang(lang_code),
         enhanced=True,
     )
-    audio_url = await tts.generate_and_upload(text, lang_code)
+    audio_url = await tts.generate_and_upload(text, lang_code, call_sid=call_sid)
     if audio_url:
         gather.play(audio_url)
     else:
         _say(gather, text, lang_code)
     response.append(gather)
+    _response_sent_at[call_sid] = time.monotonic()
     return Response(content=str(response), media_type="text/xml")
 
 
@@ -714,7 +1169,23 @@ async def _send_final_summary(call_sid: str):
         for e in transcript
     )
     call_meta = conversation.get_call_meta(call_sid)
-    summary   = await conversation.summarize(full_text, state.get("language_detected", "en"), call_meta)
+    summary, sum_prompt_tok, sum_compl_tok = await conversation.summarize(
+        full_text, state.get("language_detected", "en"), call_meta,
+    )
+
+    # Merge summary tokens and TTS usage into call usage
+    u = active_calls[call_sid].setdefault("usage", _empty_call_usage())
+    u["summary_prompt_tokens"] += sum_prompt_tok
+    u["summary_completion_tokens"] += sum_compl_tok
+
+    tts_usage = tts.get_usage(call_sid)
+    u["tts_elevenlabs_chars"] += tts_usage.get("elevenlabs_chars", 0)
+    u["tts_openai_chars"] += tts_usage.get("openai_chars", 0)
+    u["estimated_cost"] = _compute_cost(u)
+
+    # Update session-wide totals
+    for k in _total_usage:
+        _total_usage[k] += u.get(k, 0)
 
     await owner.notify(
         i18n.SIG_SUMMARY.get(_sl, i18n.SIG_SUMMARY["en"]).format(
@@ -734,6 +1205,20 @@ async def _send_final_summary(call_sid: str):
     if transcript_text:
         header = i18n.SIG_TRANSCRIPT_HEADER.get(_sl, i18n.SIG_TRANSCRIPT_HEADER["en"])
         await owner.notify(f"{header}\n{transcript_text[:1800]}", call_sid)
+
+    # Store timing data for /debug
+    call_timings = state.get("timings", [])
+    if call_timings:
+        _last_call_timings.append({
+            "call_sid": call_sid[:12],
+            "caller": caller,
+            "time": datetime.utcnow().strftime("%H:%M:%S"),
+            "turns": call_timings,
+            "llm_provider": call_timings[0].get("llm_provider", "?") if call_timings else "?",
+        })
+        # Keep only last 10 calls
+        while len(_last_call_timings) > 10:
+            _last_call_timings.pop(0)
 
     await _save_call_to_file(call_sid, summary)
     logger.info(f"Final summary sent for {call_sid[:12]}")
@@ -767,6 +1252,9 @@ async def _save_call_to_file(call_sid: str, summary: str):
         "summary": summary,
         "transcript": state.get("transcript", []),
         "call_meta": conversation.get_call_meta(call_sid),
+        "recording_url": state.get("recording_url"),
+        "usage": state.get("usage"),
+        "timings": state.get("timings"),
     }
 
     try:

@@ -19,6 +19,8 @@ TWILIO_LANG_CODES: dict[str, str] = {
     "sk": "sk-SK",
     "de": "de-DE",
     "fr": "fr-FR",
+    "it": "it-IT",
+    "hi": "hi-IN",
     "uk": "uk-UA",
     "es": "es-ES",
 }
@@ -29,6 +31,9 @@ POLLY_VOICES: dict[str, tuple[str, str]] = {
     "pl": ("pl-PL", "Polly.Ewa"),
     "en": ("en-US", "Polly.Joanna"),
     "de": ("de-DE", "Polly.Marlene"),
+    "fr": ("fr-FR", "Polly.Lea"),
+    "it": ("it-IT", "Polly.Bianca"),
+    "hi": ("hi-IN", "Polly.Aditi"),
 }
 
 # ── ElevenLabs Voice IDs ──────────────────────────────────────────────────────
@@ -36,6 +41,9 @@ ELEVENLABS_VOICES: dict[str, str] = {
     "pl": os.getenv("ELEVENLABS_VOICE_PL", "pNInz6obpgDQGcFmaJgB"),
     "en": os.getenv("ELEVENLABS_VOICE_EN", "EXAVITQu4vr4xnSDxMaL"),
     "de": os.getenv("ELEVENLABS_VOICE_DE", "pNInz6obpgDQGcFmaJgB"),
+    "fr": os.getenv("ELEVENLABS_VOICE_FR", "pNInz6obpgDQGcFmaJgB"),
+    "it": os.getenv("ELEVENLABS_VOICE_IT", "pNInz6obpgDQGcFmaJgB"),
+    "hi": os.getenv("ELEVENLABS_VOICE_HI", "pNInz6obpgDQGcFmaJgB"),
 }
 ELEVENLABS_DEFAULT = os.getenv("ELEVENLABS_VOICE_DEFAULT", "pNInz6obpgDQGcFmaJgB")
 
@@ -52,6 +60,7 @@ GREETINGS: dict[str, str] = {
     "nl": "Goedendag, ik ben de assistent van de eigenaar. Hoe kan ik u helpen?",
     "pt": "Bom dia, sou a assistente do proprietário. Como posso ajudar?",
     "ru": "Добрый день, я ассистент владельца телефона. Чем могу помочь?",
+    "hi": "नमस्ते, मैं फ़ोन के मालिक की सहायक हूँ। मैं आपकी कैसे मदद कर सकती हूँ?",
     "uk": "Добрий день, я асистент власника телефону. Чим можу допомогти?",
     "en": "Hello, this is the owner's assistant. How can I help you?",
 }
@@ -60,17 +69,27 @@ NO_INPUT_PROMPTS: dict[str, str] = {
     "en": "Is anyone there? Please speak if you'd like to leave a message.",
     "pl": "Przepraszam, czy jest tam ktoś? Proszę mówić.",
     "de": "Ist jemand da? Bitte sprechen Sie.",
+    "fr": "Il y a quelqu'un ? Parlez si vous souhaitez laisser un message.",
+    "it": "C'è qualcuno? Parli pure se desidera lasciare un messaggio.",
+    "hi": "क्या कोई है? कृपया बोलें अगर आप संदेश छोड़ना चाहते हैं।",
 }
 
 NO_INPUT_GOODBYES: dict[str, str] = {
     "en": "No response detected. Thank you for calling. Goodbye.",
     "pl": "Nie słyszę odpowiedzi. Dziękuję za telefon. Do widzenia.",
     "de": "Keine Antwort. Danke für Ihren Anruf. Auf Wiederhören.",
+    "fr": "Aucune réponse détectée. Merci d'avoir appelé. Au revoir.",
+    "it": "Nessuna risposta rilevata. Grazie per la chiamata. Arrivederci.",
+    "hi": "कोई जवाब नहीं मिला। कॉल करने के लिए धन्यवाद। अलविदा।",
 }
 
 CLARIFICATIONS: dict[str, str] = {
     "en": "I'm sorry, I didn't catch that. Could you please repeat?",
     "pl": "Przepraszam, nie dosłyszałam. Czy mógłby Pan/Pani powtórzyć?",
+    "de": "Entschuldigung, ich habe das nicht verstanden. Könnten Sie das bitte wiederholen?",
+    "fr": "Excusez-moi, je n'ai pas compris. Pourriez-vous répéter ?",
+    "it": "Mi scusi, non ho capito. Potrebbe ripetere per favore?",
+    "hi": "क्षमा करें, मुझे समझ नहीं आया। क्या आप दोहरा सकते हैं?",
 }
 
 # ── GPT Assistant Hints & Fallbacks ──────────────────────────────────────────
@@ -84,6 +103,8 @@ LANG_HINTS: dict[str, str] = {
     "fr": "The caller is currently speaking French. Respond in French. If the caller explicitly asks you to switch to another language, do so immediately.",
     "uk": "The caller is currently speaking Ukrainian. Respond in Ukrainian. If the caller explicitly asks you to switch to another language, do so immediately.",
     "es": "The caller is currently speaking Spanish. Respond in Spanish. If the caller explicitly asks you to switch to another language, do so immediately.",
+    "it": "The caller is currently speaking Italian. Respond in Italian. If the caller explicitly asks you to switch to another language, do so immediately.",
+    "hi": "The caller is currently speaking Hindi. Respond in Hindi. If the caller explicitly asks you to switch to another language, do so immediately.",
 }
 
 ERROR_FALLBACKS: dict[str, str] = {

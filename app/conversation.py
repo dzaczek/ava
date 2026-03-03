@@ -1,7 +1,7 @@
 """
 AVA – Conversation Manager
 ==========================
-Drives the GPT-4o conversation loop.
+Drives the LLM conversation loop (OpenAI or Groq).
 
 Key features:
 - Stateful per-call message history
@@ -15,13 +15,43 @@ import os
 import json
 import logging
 import re
+import time
 from typing import AsyncIterator, Optional
 
 from openai import AsyncOpenAI
 from app import i18n
 
 logger = logging.getLogger(__name__)
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# ── LLM clients ──────────────────────────────────────────────────────────────
+# LLM_PROVIDER: "openai" (default) or "groq"
+# Groq uses an OpenAI-compatible API, so we reuse AsyncOpenAI with a different base_url.
+_openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+_groq_key = os.getenv("GROQ_API_KEY")
+_groq_client = (
+    AsyncOpenAI(
+        api_key=_groq_key,
+        base_url="https://api.groq.com/openai/v1",
+    )
+    if _groq_key
+    else None
+)
+
+_LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").lower()
+
+# Default models per provider
+_DEFAULT_MODELS = {
+    "openai": "gpt-4o-mini",
+    "groq": "llama-3.3-70b-versatile",
+}
+
+def _get_client(provider: str = "") -> AsyncOpenAI:
+    """Return the LLM client for the given provider."""
+    p = provider or _LLM_PROVIDER
+    if p == "groq" and _groq_client:
+        return _groq_client
+    return _openai_client
 
 # ── Owner context ─────────────────────────────────────────────────────────────
 # Customise via OWNER_CONTEXT env var – no code changes needed.
@@ -34,59 +64,35 @@ Recruiters and sales calls: politely thank them and end the call.
 """).strip()
 
 # ── System prompt ─────────────────────────────────────────────────────────────
-SYSTEM_PROMPT = f"""You are a personal assistant answering calls on behalf of the phone owner.
-The owner is currently unavailable and has asked you to handle incoming calls.
-
-== WHO YOU ARE ==
+SYSTEM_PROMPT = f"""You are a personal assistant answering calls for the phone owner.
 {OWNER_CONTEXT}
 
-You speak like a real human: naturally, warmly, with personality.
-You automatically match the language of the caller.
-If the caller asks you to switch language, do so immediately and stay in that language.
-NEVER say you are an AI, bot, virtual assistant, or anything non-human. You are a real person.
-If pressed ("are you a robot?"), deflect naturally — laugh it off, change the subject, or say something like "No, just tired today" or "I get that a lot, must be my phone voice".
+Match the caller's language. If asked to switch, do so immediately.
+NEVER admit being AI. Deflect naturally if pressed.
 
-== HOW TO RUN THE CALL ==
-1. Greet naturally using your personality (no robotic scripts).
-2. Find out why they are calling (one question at a time).
-3. Collect key details: name, company, topic, callback number if needed.
-4. Let them know you will pass the message on.
-5. Close naturally and warmly.
+Call flow: greet → find out why they call (one question per turn) → collect name, company, topic, callback number → confirm you'll pass the message → close warmly.
+Max 2–3 sentences per turn. Max 10 exchanges. End when you have all info.
 
-Rules:
-- Max 2–3 sentences per turn – speak like a person, not a FAQ page.
-- Ask only one question per turn.
-- If the caller is upset or the matter is urgent, be empathetic rather than formal.
-- Do not promise specific callback times unless you receive an owner instruction to do so.
-- Once you have all the relevant information, end the call – don't drag it out.
-- Hard limit: 10 exchanges maximum.
+Owner instructions mid-call:
+[OWNER_INSTRUCTION: text] → act on it. [RELAY_TO_CALLER: text] → relay naturally. [ASK_CALLER: q] → ask it. END_CALL_NOW → wrap up immediately.
 
-== OWNER INSTRUCTIONS ==
-During the call you may receive real-time instructions injected into the context:
-- [OWNER_INSTRUCTION: text]   → act on this instruction naturally
-- [RELAY_TO_CALLER: text]     → relay this information to the caller naturally
-- [ASK_CALLER: question]      → ask the caller this question
-- END_CALL_NOW                → wrap up and end the call in this very turn
-
-== RESPONSE FORMAT ==
-Write ONLY the text to be spoken aloud – plain sentences, no markdown, no lists, no asterisks.
-Append metadata at the very end of every response (invisible to the caller):
-
-<meta>{{"end_call": false, "urgency": "low|medium|high", "topic": "short topic in English", "caller_name": "first name if given, else empty", "lang": "two-letter language code you are responding in, e.g. pl, en, de"}}</meta>
-
-Set end_call=true when:
-- You have collected the necessary information and said goodbye
-- You received END_CALL_NOW
-- The caller is saying goodbye
-- Exchange count > 9
+Output ONLY spoken text (no markdown). Append at the end:
+<meta>{{"end_call": false, "urgency": "low|medium|high", "topic": "short English topic", "caller_name": "first name or empty", "lang": "pl|en|de|..."}}</meta>
+Set end_call=true when: info collected + goodbye said, END_CALL_NOW received, caller says goodbye, or turn > 9.
 """
 
 class ConversationManager:
 
     def __init__(self):
-        self.model    = os.getenv("OPENAI_MODEL", "gpt-4o")
+        default_model = _DEFAULT_MODELS.get(_LLM_PROVIDER, "gpt-4o-mini")
+        self.model         = os.getenv("LLM_MODEL", default_model)
+        self.summary_model = os.getenv("LLM_SUMMARY_MODEL", self.model)
+        self.client        = _get_client()
+        # Summary always uses OpenAI (better multilingual quality)
+        self.summary_client = _openai_client
         self.histories: dict[str, list] = {}
         self.call_meta: dict[str, dict] = {}
+        logger.info(f"LLM provider: {_LLM_PROVIDER}, model: {self.model}, summary: {self.summary_model}")
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -135,17 +141,18 @@ class ConversationManager:
             system += "\n\n⚠️ You are at 8+ exchanges. End the call at the very next natural opportunity."
 
         try:
-            completion = await client.chat.completions.create(
+            completion = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system},
                     *history[-20:],  # keep context window manageable
                 ],
-                max_tokens=350,
+                max_tokens=180,
                 temperature=0.75,
             )
 
             raw = completion.choices[0].message.content or ""
+            usage = completion.usage
 
             parsed = self._parse_meta(raw)
             self._persist_meta(call_sid, parsed)
@@ -158,6 +165,8 @@ class ConversationManager:
                 "topic": parsed["topic"],
                 "caller_name_detected": parsed["caller_name"],
                 "lang": parsed["lang"],
+                "prompt_tokens": usage.prompt_tokens if usage else 0,
+                "completion_tokens": usage.completion_tokens if usage else 0,
             }
 
         except Exception as exc:
@@ -215,24 +224,38 @@ class ConversationManager:
             system += "\n\n⚠️ You are at 8+ exchanges. End the call at the very next natural opportunity."
 
         try:
-            stream = await client.chat.completions.create(
-                model=self.model,
-                messages=[
+            stream_kwargs: dict = {
+                "model": self.model,
+                "messages": [
                     {"role": "system", "content": system},
                     *history[-20:],
                 ],
-                max_tokens=350,
-                temperature=0.75,
-                stream=True,
-            )
+                "max_tokens": 180,
+                "temperature": 0.75,
+                "stream": True,
+            }
+            # Groq doesn't support stream_options
+            if _LLM_PROVIDER != "groq":
+                stream_kwargs["stream_options"] = {"include_usage": True}
+
+            _llm_start = time.monotonic()
+            stream = await self.client.chat.completions.create(**stream_kwargs)
 
             buffer = ""
             full_response = ""
+            usage = None
+            _first_token_time = None
 
             async for chunk in stream:
+                if chunk.usage:
+                    usage = chunk.usage
+                if not chunk.choices:
+                    continue
                 delta = chunk.choices[0].delta.content or ""
                 if not delta:
                     continue
+                if _first_token_time is None:
+                    _first_token_time = time.monotonic()
                 buffer += delta
                 full_response += delta
 
@@ -256,6 +279,7 @@ class ConversationManager:
             self._persist_meta(call_sid, parsed)
             history.append({"role": "assistant", "content": parsed["text"]})
 
+            _llm_end = time.monotonic()
             yield {
                 "type": "done",
                 "text": parsed["text"],
@@ -264,6 +288,12 @@ class ConversationManager:
                 "topic": parsed["topic"],
                 "caller_name_detected": parsed["caller_name"],
                 "lang": parsed["lang"],
+                "prompt_tokens": usage.prompt_tokens if usage else 0,
+                "completion_tokens": usage.completion_tokens if usage else 0,
+                "timing": {
+                    "llm_first_token": round((_first_token_time or _llm_end) - _llm_start, 3),
+                    "llm_total": round(_llm_end - _llm_start, 3),
+                },
             }
 
         except Exception as exc:
@@ -320,10 +350,12 @@ class ConversationManager:
     def get_call_meta(self, call_sid: str) -> dict:
         return self.call_meta.get(call_sid, {})
 
-    async def summarize(self, transcript: str, lang: str, call_meta: dict) -> str:
+    async def summarize(self, transcript: str, lang: str, call_meta: dict) -> tuple[str, int, int]:
         """
         Ask GPT-4o to produce a concise English summary of the full call.
         Always returns English regardless of the call language.
+
+        Returns (summary_text, prompt_tokens, completion_tokens).
         """
         urgency_map   = {"low": "🟢 Low", "medium": "🟡 Medium", "high": "🔴 HIGH"}
         urgency_label = urgency_map.get(call_meta.get("urgency", "low"), "🟢 Low")
@@ -334,8 +366,8 @@ class ConversationManager:
         )
 
         try:
-            resp = await client.chat.completions.create(
-                model=self.model,
+            resp = await self.summary_client.chat.completions.create(
+                model=self.summary_model,
                 messages=[
                     {"role": "system", "content": summary_prompt},
                     {"role": "user", "content": f"Transcript:\n\n{transcript}"},
@@ -344,11 +376,16 @@ class ConversationManager:
                 temperature=0.2,
             )
             summary = resp.choices[0].message.content or "No content to summarise."
-            return f"Priority: {urgency_label}\n\n{summary}"
+            usage = resp.usage
+            return (
+                f"Priority: {urgency_label}\n\n{summary}",
+                usage.prompt_tokens if usage else 0,
+                usage.completion_tokens if usage else 0,
+            )
 
         except Exception as exc:
             logger.error(f"Summary error: {exc}")
-            return "Could not generate summary."
+            return "Could not generate summary.", 0, 0
 
     def cleanup(self, call_sid: str):
         """Free memory for a completed call."""

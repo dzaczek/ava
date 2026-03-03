@@ -122,6 +122,11 @@ class ContactLookup:
         normalised = self._e164(phone)
         return self._contact_lang.get(normalised) or self._contact_lang.get(phone)
 
+    def is_known(self, phone: str) -> bool:
+        """Check if a phone number exists in the local contacts."""
+        normalised = self._e164(phone)
+        return normalised in self._contacts or phone in self._contacts
+
     def add(self, phone: str, name: str):
         """Add a contact at runtime (not persisted to disk)."""
         self._contacts[self._e164(phone)] = name
