@@ -94,7 +94,7 @@ sequenceDiagram
     AVA->>TTS: Generate greeting TTS
     TTS-->>AVA: MP3 audio URL
 
-    AVA->>Twilio: TwiML: Gather + Play<br/>speech_timeout=5s<br/>language=de-CH, enhanced=true
+    AVA->>Twilio: TwiML: Gather + Play<br/>speech_timeout=2s<br/>language=de-CH, enhanced=true
     Twilio->>Caller: Plays greeting audio
 
     loop Max 10 exchanges
@@ -152,7 +152,7 @@ sequenceDiagram
 
 | Parameter | Value | Location | Description |
 |-----------|-------|----------|-------------|
-| `speech_timeout` | **5 s** | `main.py` (all 4 Gather calls) | Silence after speech ends before Twilio fires callback |
+| `speech_timeout` | **2 s** | `main.py` (all 4 Gather calls) | Silence after speech ends before Twilio fires callback |
 | `enhanced` | `true` | `main.py` (Gather) | Use enhanced STT model for better accuracy |
 | GPT `max_tokens` | **350** | `conversation.py` | Max response length per turn |
 | GPT `temperature` | **0.75** | `conversation.py` | Creativity level for responses |
@@ -178,7 +178,7 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    Start([CALL START]) --> Prefix["Phone prefix detection<br/>+41 → de-CH<br/>+48 → pl-PL<br/>+44 → en-GB<br/>(198 prefixes)"]
+    Start([CALL START]) --> Prefix["Phone prefix detection<br/>+41 → de-CH<br/>+48 → pl-PL<br/>+44 → en-GB<br/>(52 prefixes)"]
 
     Prefix --> ContactCheck{Contact has<br/>lang override?}
     ContactCheck -->|Yes| ContactLang["Use contact language<br/>contacts.json<br/>e.g. {lang: pl}"]
@@ -187,7 +187,7 @@ flowchart TD
     ContactLang --> Gather
     PrefixLang --> Gather
 
-    Gather["Twilio STT Gather<br/>language = detected locale<br/>speech_timeout = 5s<br/>enhanced = true"]
+    Gather["Twilio STT Gather<br/>language = detected locale<br/>speech_timeout = 2s<br/>enhanced = true"]
 
     Gather --> Speech["SpeechResult (text)"]
     Speech --> Detect["langdetect on text<br/>(if 3+ words)<br/>e.g. Dzień dobry → pl"]
