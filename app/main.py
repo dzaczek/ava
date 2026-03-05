@@ -24,9 +24,11 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urljoin
 
+import io
 import httpx
 from fastapi import FastAPI, Form, Request, BackgroundTasks, HTTPException, Depends
 from fastapi.responses import Response, FileResponse
+from openai import AsyncOpenAI as _AsyncOpenAI
 from twilio.request_validator import RequestValidator
 from twilio.twiml.voice_response import VoiceResponse, Gather
 
@@ -58,7 +60,55 @@ contacts     = ContactLookup()
 tts          = TTSProvider()
 
 active_calls: dict[str, dict] = {}
+_first_turn_results: dict[str, dict] = {}  # Whisper+GPT results for async first turn
 URGENCY_EMOJI = {"low": "🟢", "medium": "🟡", "high": "🔴"}
+
+# ── Whisper (language detection on first turn) ───────────────────────────────
+_whisper_client = _AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+_WHISPER_LANG_MAP = {
+    "english": "en", "polish": "pl", "german": "de", "french": "fr",
+    "italian": "it", "spanish": "es", "czech": "cs", "slovak": "sk",
+    "hindi": "hi", "ukrainian": "uk", "dutch": "nl", "portuguese": "pt",
+    "russian": "ru", "turkish": "tr", "japanese": "ja", "korean": "ko",
+    "chinese": "zh", "arabic": "ar", "hungarian": "hu", "romanian": "ro",
+    "swedish": "sv", "norwegian": "no", "danish": "da", "finnish": "fi",
+}
+
+
+async def _whisper_transcribe(recording_url: str) -> tuple[str, str]:
+    """Download Twilio recording and transcribe with OpenAI Whisper.
+
+    Returns (text, lang_code) e.g. ("hello, I need help", "en").
+    Falls back to ("", "en") on any error.
+    """
+    try:
+        sid = os.getenv("TWILIO_ACCOUNT_SID", "")
+        token = os.getenv("TWILIO_AUTH_TOKEN", "")
+        async with httpx.AsyncClient(timeout=15) as http:
+            resp = await http.get(
+                f"{recording_url}.mp3",
+                auth=(sid, token),
+                follow_redirects=True,
+            )
+            resp.raise_for_status()
+            audio_bytes = resp.content
+
+        audio_file = io.BytesIO(audio_bytes)
+        audio_file.name = "recording.mp3"
+
+        result = await _whisper_client.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_file,
+            response_format="verbose_json",
+        )
+
+        lang = _WHISPER_LANG_MAP.get(result.language, "en")
+        text = result.text.strip() if result.text else ""
+        logger.info(f"Whisper: lang={result.language!r}→{lang} text=\"{text[:80]}\"")
+        return text, lang
+    except Exception as exc:
+        logger.error(f"Whisper transcription failed: {exc}")
+        return "", "en"
 AUDIO_DIR = Path("/tmp/tts_cache")
 CALLS_DIR = Path("/data/calls")
 
@@ -777,27 +827,230 @@ async def incoming_call(
         CallSid,
     )
 
-    # Greet in the caller's detected language
-    greeting  = i18n.GREETINGS.get(lang_code, i18n.GREETINGS["en"])
-    audio_url = await tts.generate_and_upload(greeting, lang_code, call_sid=CallSid)
+    # If language comes from contact book override, use Gather (language is known).
+    # Otherwise use Record + Whisper for automatic language detection on first turn.
+    if contact_lang:
+        greeting = i18n.GREETINGS.get(lang_code, i18n.GREETINGS["en"])
+        audio_url = await tts.generate_and_upload(greeting, lang_code, call_sid=CallSid)
+
+        response = VoiceResponse()
+        gather = Gather(
+            input="speech",
+            action=f"/twilio/process_speech/{CallSid}",
+            method="POST",
+            speech_timeout="1",
+            language=twilio_locale,
+            enhanced=True,
+        )
+        if audio_url:
+            gather.play(audio_url)
+        else:
+            _say(gather, greeting, lang_code)
+        response.append(gather)
+        response.redirect(f"/twilio/no_input/{CallSid}", method="POST")
+    else:
+        # Greeting in caller's prefix language via Polly, asking which language they want
+        greeting_text = i18n.GREETING_LANG_QUESTION.get(lang_code, i18n.GREETING_LANG_QUESTION["en"])
+        polly_locale = i18n.TWILIO_LANG_CODES.get(lang_code, "en-US")
+        polly_entry = i18n.POLLY_VOICES.get(lang_code)
+        response = VoiceResponse()
+        if polly_entry:
+            response.say(greeting_text, language=polly_entry[0], voice=polly_entry[1])
+        else:
+            response.say(greeting_text, language=polly_locale)
+        response.record(
+            action=f"/twilio/first_response/{CallSid}",
+            method="POST",
+            max_length=15,
+            timeout=2,
+            trim="trim-silence",
+            play_beep=False,
+            finish_on_key="",
+        )
+        response.redirect(f"/twilio/no_input/{CallSid}", method="POST")
+    _response_sent_at[CallSid] = time.monotonic()
+    return Response(content=str(response), media_type="text/xml")
+
+
+# ── First response (Whisper language detection – async) ──────────────────────
+
+@app.post("/twilio/first_response/{call_sid}", dependencies=[Depends(verify_twilio_signature)])
+async def first_response(
+    call_sid: str,
+    RecordingUrl: Optional[str] = Form(None),
+    RecordingDuration: Optional[str] = Form(None),
+):
+    """
+    Called after the first Record verb.
+    Kicks off Whisper+GPT processing in background, returns a waiting message
+    and redirects to a polling endpoint that checks when the result is ready.
+    """
+    logger.info(f"First response [{call_sid[:12]}]: url={RecordingUrl} duration={RecordingDuration}s")
+
+    # If no recording or zero duration, treat as no input
+    if not RecordingUrl or RecordingDuration in (None, "0"):
+        call_state = active_calls.get(call_sid, {})
+        return await _clarification_response(call_sid, call_state)
+
+    # Start Whisper+GPT processing immediately in background
+    asyncio.create_task(_process_first_turn(call_sid, RecordingUrl))
+
+    # Return "please wait" via Polly in prefix language
+    call_state = active_calls.get(call_sid, {})
+    _prefix_lang = call_state.get("language_detected", "en-US")[:2]
+    wait_text = i18n.WHISPER_WAIT.get(_prefix_lang, i18n.WHISPER_WAIT["en"])
+    _wait_locale = i18n.TWILIO_LANG_CODES.get(_prefix_lang, "en-US")
+    _wait_polly = i18n.POLLY_VOICES.get(_prefix_lang)
+    response = VoiceResponse()
+    if _wait_polly:
+        response.say(wait_text, language=_wait_polly[0], voice=_wait_polly[1])
+    else:
+        response.say(wait_text, language=_wait_locale)
+    response.pause(length=2)
+    response.redirect(f"/twilio/whisper_result/{call_sid}", method="POST")
+
+    return Response(content=str(response), media_type="text/xml")
+
+
+async def _process_first_turn(call_sid: str, recording_url: str):
+    """Background task: Whisper transcription → GPT → TTS. Stores result for polling."""
+    try:
+        _start = time.monotonic()
+
+        # 1. Whisper
+        whisper_text, whisper_lang = await _whisper_transcribe(recording_url)
+        _whisper_done = time.monotonic()
+        logger.info(f"Whisper [{call_sid[:12]}]: {round(_whisper_done - _start, 2)}s lang={whisper_lang} text=\"{whisper_text[:80]}\"")
+
+        if not whisper_text:
+            _first_turn_results[call_sid] = {"empty": True}
+            return
+
+        # 2. Update language
+        twilio_locale = i18n.TWILIO_LANG_CODES.get(whisper_lang, "en-US")
+        lang_code = whisper_lang
+        if call_sid in active_calls:
+            active_calls[call_sid]["language_detected"] = twilio_locale
+            active_calls[call_sid]["transcript"].append({
+                "role": "user",
+                "text": whisper_text,
+                "time": datetime.utcnow().isoformat(),
+                "lang": twilio_locale,
+            })
+
+        call_state = active_calls.get(call_sid, {})
+        owner_instructions = owner.pop_instructions(call_sid)
+
+        # 3. GPT
+        sentences = []
+        ai = {"text": "", "end_call": False, "urgency": "low", "topic": "", "caller_name_detected": ""}
+        first_audio_url = None
+
+        async for part in conversation.respond_streaming(
+            call_sid=call_sid,
+            user_text=whisper_text,
+            language=lang_code,
+            call_state=call_state,
+            owner_instructions=owner_instructions,
+        ):
+            if part["type"] == "sentence":
+                sentences.append(part["text"])
+                if first_audio_url is None:
+                    first_audio_url = await tts.generate_and_upload(part["text"], lang_code, call_sid=call_sid)
+            elif part["type"] == "done":
+                ai = part
+
+        # GPT meta language override
+        if ai.get("lang") and ai["lang"] in i18n.TWILIO_LANG_CODES:
+            new_locale = i18n.TWILIO_LANG_CODES[ai["lang"]]
+            if call_sid in active_calls and active_calls[call_sid].get("language_detected") != new_locale:
+                logger.info(f"Language switch [{call_sid[:12]}]: {twilio_locale} -> {new_locale} (GPT meta)")
+                active_calls[call_sid]["language_detected"] = new_locale
+                lang_code = ai["lang"]
+
+        # Track usage + transcript
+        if call_sid in active_calls:
+            u = active_calls[call_sid].setdefault("usage", _empty_call_usage())
+            u["gpt_prompt_tokens"] += ai.get("prompt_tokens", 0)
+            u["gpt_completion_tokens"] += ai.get("completion_tokens", 0)
+            active_calls[call_sid]["transcript"].append({
+                "role": "assistant", "text": ai["text"], "time": datetime.utcnow().isoformat(),
+            })
+            if ai.get("caller_name_detected") and not active_calls[call_sid].get("caller_name"):
+                active_calls[call_sid]["caller_name"] = ai["caller_name_detected"]
+
+        # 4. TTS for remaining sentences
+        audio_urls = [first_audio_url] if first_audio_url else []
+        for sentence in sentences[1:]:
+            url = await tts.generate_and_upload(sentence, lang_code, call_sid=call_sid)
+            if url:
+                audio_urls.append(url)
+
+        _total = round(time.monotonic() - _start, 2)
+        logger.info(f"First turn ready [{call_sid[:12]}]: {_total}s lang={lang_code}")
+
+        _first_turn_results[call_sid] = {
+            "audio_urls": audio_urls,
+            "ai": ai,
+            "lang_code": lang_code,
+        }
+    except Exception as exc:
+        logger.error(f"First turn processing failed [{call_sid[:12]}]: {exc}")
+        _first_turn_results[call_sid] = {"empty": True}
+
+
+@app.post("/twilio/whisper_result/{call_sid}", dependencies=[Depends(verify_twilio_signature)])
+async def whisper_result(call_sid: str, background_tasks: BackgroundTasks):
+    """Polls for async first-turn result. Redirects back with pause if not ready yet."""
+    result = _first_turn_results.pop(call_sid, None)
+
+    if result is None:
+        # Not ready yet — pause and poll again
+        response = VoiceResponse()
+        response.pause(length=2)
+        response.redirect(f"/twilio/whisper_result/{call_sid}", method="POST")
+        return Response(content=str(response), media_type="text/xml")
+
+    if result.get("empty"):
+        # Whisper returned nothing — ask caller to repeat
+        call_state = active_calls.get(call_sid, {})
+        return await _clarification_response(call_sid, call_state)
+
+    # Build TwiML with GPT response
+    audio_urls = result["audio_urls"]
+    ai = result["ai"]
+    lang_code = result["lang_code"]
 
     response = VoiceResponse()
-    gather   = Gather(
-        input="speech",
-        action=f"/twilio/process_speech/{CallSid}",
-        method="POST",
-        speech_timeout="1",
-        language=twilio_locale,
-        enhanced=True,
-    )
-    if audio_url:
-        gather.play(audio_url)
-    else:
-        _say(gather, greeting, lang_code)
 
-    response.append(gather)
-    response.redirect(f"/twilio/no_input/{CallSid}", method="POST")
-    _response_sent_at[CallSid] = time.monotonic()
+    if ai.get("end_call"):
+        if audio_urls:
+            for url in audio_urls:
+                response.play(url)
+        else:
+            _say(response, ai["text"], lang_code)
+        response.hangup()
+        background_tasks.add_task(_send_final_summary, call_sid)
+    else:
+        next_locale = _twilio_lang(lang_code)
+        logger.info(f"Next Gather [{call_sid[:12]}]: STT={next_locale} (after Whisper)")
+        gather = Gather(
+            input="speech",
+            action=f"/twilio/process_speech/{call_sid}",
+            method="POST",
+            speech_timeout="1",
+            language=next_locale,
+            enhanced=True,
+        )
+        if audio_urls:
+            for url in audio_urls:
+                gather.play(url)
+        else:
+            _say(gather, ai["text"], lang_code)
+        response.append(gather)
+        response.redirect(f"/twilio/no_input/{call_sid}", method="POST")
+
+    _response_sent_at[call_sid] = time.monotonic()
     return Response(content=str(response), media_type="text/xml")
 
 
@@ -828,19 +1081,19 @@ async def process_speech(
     if not SpeechResult:
         return await _clarification_response(call_sid, call_state)
 
-    prefix_lang = call_state.get("language_detected") or "en-US"
-    detected_lang = LanguageCode or _detect_language(SpeechResult, fallback=prefix_lang)
-    lang_code     = detected_lang.split("-")[0].lower()
-    logger.info(f"Language resolved [{call_sid[:12]}]: twilio={LanguageCode} text_detect={detected_lang}")
+    current_lang = call_state.get("language_detected") or "en-US"
+    lang_code    = current_lang.split("-")[0].lower()
+    logger.info(f"Language input [{call_sid[:12]}]: current_stt={current_lang} twilio={LanguageCode} text=\"{SpeechResult[:60]}\"")
+
+    # Don't touch language here — let GPT meta be the sole authority for switching.
+    # langdetect on STT text is unreliable (garbled when wrong language is set).
 
     if call_sid in active_calls:
-        # Always update to the latest detected language so responses track the caller
-        active_calls[call_sid]["language_detected"] = detected_lang
         active_calls[call_sid]["transcript"].append({
             "role": "user",
             "text": SpeechResult,
             "time": datetime.utcnow().isoformat(),
-            "lang": detected_lang,
+            "lang": current_lang,
         })
 
     # Consume any Signal instructions the owner sent while the call was ongoing
@@ -881,7 +1134,8 @@ async def process_speech(
         u["gpt_prompt_tokens"] += ai.get("prompt_tokens", 0)
         u["gpt_completion_tokens"] += ai.get("completion_tokens", 0)
 
-    # If GPT switched language (e.g. caller asked for German), update detection
+    # GPT meta lang is the sole authority for language switching
+    logger.info(f"GPT meta [{call_sid[:12]}]: lang={ai.get('lang')!r} end_call={ai.get('end_call')} text=\"{ai.get('text', '')[:80]}\"")
     if ai.get("lang") and ai["lang"] in i18n.TWILIO_LANG_CODES:
         new_locale = i18n.TWILIO_LANG_CODES[ai["lang"]]
         if call_sid in active_calls and active_calls[call_sid].get("language_detected") != new_locale:
@@ -1057,6 +1311,7 @@ async def _delayed_cleanup(call_sid: str):
     await asyncio.sleep(90)
     active_calls.pop(call_sid, None)
     _response_sent_at.pop(call_sid, None)
+    _first_turn_results.pop(call_sid, None)
     owner.clear_active_call(call_sid)
     conversation.cleanup(call_sid)
 

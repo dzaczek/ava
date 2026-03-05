@@ -33,7 +33,12 @@ POLLY_VOICES: dict[str, tuple[str, str]] = {
     "de": ("de-DE", "Polly.Marlene"),
     "fr": ("fr-FR", "Polly.Lea"),
     "it": ("it-IT", "Polly.Bianca"),
+    "es": ("es-ES", "Polly.Lucia"),
+    "pt": ("pt-PT", "Polly.Ines"),
+    "nl": ("nl-NL", "Polly.Lotte"),
+    "ru": ("ru-RU", "Polly.Tatyana"),
     "hi": ("hi-IN", "Polly.Aditi"),
+    # cs, sk, uk have no Polly voices — use Twilio basic TTS (no voice param)
 }
 
 # ── ElevenLabs Voice IDs ──────────────────────────────────────────────────────
@@ -48,6 +53,39 @@ ELEVENLABS_VOICES: dict[str, str] = {
 ELEVENLABS_DEFAULT = os.getenv("ELEVENLABS_VOICE_DEFAULT", "pNInz6obpgDQGcFmaJgB")
 
 # ── Interaction Strings ───────────────────────────────────────────────────────
+
+# Multilingual greeting — played via Twilio Say (Polly), not our TTS voice.
+# Asks the caller which language they want, then Whisper auto-detects from their answer.
+# Multilingual greeting — played via Twilio Polly in the caller's prefix language.
+# Asks which language they want, then Whisper auto-detects from their answer.
+GREETING_LANG_QUESTION: dict[str, str] = {
+    "en": "Hello! Which language would you like to use for this conversation? Please speak now.",
+    "de": "Guten Tag! Welche Sprache möchten Sie für dieses Gespräch verwenden? Bitte sprechen Sie jetzt.",
+    "pl": "Dzień dobry! W jakim języku chce Pan lub Pani prowadzić rozmowę? Proszę mówić.",
+    "fr": "Bonjour ! Quelle langue souhaitez-vous utiliser pour cette conversation ? Parlez maintenant.",
+    "it": "Buongiorno! In quale lingua desidera condurre questa conversazione? Prego, parli ora.",
+    "es": "¡Buenos días! ¿En qué idioma desea mantener esta conversación? Hable ahora, por favor.",
+    "cs": "Dobrý den! V jakém jazyce chcete vést tento rozhovor? Prosím, mluvte.",
+    "sk": "Dobrý deň! V akom jazyku chcete viesť tento rozhovor? Prosím, hovorte.",
+    "nl": "Goedendag! In welke taal wilt u dit gesprek voeren? Spreek alstublieft.",
+    "pt": "Bom dia! Em que língua gostaria de conduzir esta conversa? Fale agora, por favor.",
+    "uk": "Добрий день! Якою мовою ви хочете вести розмову? Будь ласка, говоріть.",
+    "ru": "Добрый день! На каком языке вы хотите вести разговор? Пожалуйста, говорите.",
+    "hi": "नमस्ते! आप इस बातचीत के लिए कौन सी भाषा इस्तेमाल करना चाहेंगे? कृपया बोलें।",
+}
+
+# Played while Whisper + GPT process the first response — via Polly, not our voice.
+WHISPER_WAIT: dict[str, str] = {
+    "en": "Language detected. Connecting you to the assistant, one moment please.",
+    "de": "Sprache erkannt. Sie werden mit dem Assistenten verbunden, einen Moment bitte.",
+    "pl": "Język wykryty. Łączę z asystentem, proszę chwilę poczekać.",
+    "fr": "Langue détectée. Connexion avec l'assistant, un instant s'il vous plaît.",
+    "it": "Lingua rilevata. Collegamento con l'assistente, un momento per favore.",
+    "es": "Idioma detectado. Conectando con el asistente, un momento por favor.",
+    "cs": "Jazyk rozpoznán. Připojuji k asistentovi, moment prosím.",
+    "sk": "Jazyk rozpoznaný. Pripájam k asistentovi, moment prosím.",
+    "hi": "भाषा पहचानी गई। सहायक से जोड़ रहे हैं, कृपया एक पल प्रतीक्षा करें।",
+}
 
 GREETINGS: dict[str, str] = {
     "pl": "Dzień dobry, tu asystentka właściciela telefonu. W czym mogę pomóc?",
@@ -95,16 +133,16 @@ CLARIFICATIONS: dict[str, str] = {
 # ── GPT Assistant Hints & Fallbacks ──────────────────────────────────────────
 
 LANG_HINTS: dict[str, str] = {
-    "pl": "The caller is currently speaking Polish. Respond in Polish. If the caller explicitly asks you to switch to another language, do so immediately.",
-    "en": "The caller is currently speaking English. Respond in English. If the caller explicitly asks you to switch to another language, do so immediately.",
-    "de": "The caller is currently speaking German. Respond in German. If the caller explicitly asks you to switch to another language, do so immediately.",
-    "cs": "The caller is currently speaking Czech. Respond in Czech. If the caller explicitly asks you to switch to another language, do so immediately.",
-    "sk": "The caller is currently speaking Slovak. Respond in Slovak. If the caller explicitly asks you to switch to another language, do so immediately.",
-    "fr": "The caller is currently speaking French. Respond in French. If the caller explicitly asks you to switch to another language, do so immediately.",
-    "uk": "The caller is currently speaking Ukrainian. Respond in Ukrainian. If the caller explicitly asks you to switch to another language, do so immediately.",
-    "es": "The caller is currently speaking Spanish. Respond in Spanish. If the caller explicitly asks you to switch to another language, do so immediately.",
-    "it": "The caller is currently speaking Italian. Respond in Italian. If the caller explicitly asks you to switch to another language, do so immediately.",
-    "hi": "The caller is currently speaking Hindi. Respond in Hindi. If the caller explicitly asks you to switch to another language, do so immediately.",
+    "pl": "The STT language is set to Polish. Respond in whatever language the caller is ACTUALLY speaking — even if different from Polish. Set meta lang accordingly.",
+    "en": "The STT language is set to English. Respond in whatever language the caller is ACTUALLY speaking — even if different from English. Set meta lang accordingly.",
+    "de": "The STT language is set to German. Respond in whatever language the caller is ACTUALLY speaking — even if different from German. Set meta lang accordingly.",
+    "cs": "The STT language is set to Czech. Respond in whatever language the caller is ACTUALLY speaking — even if different from Czech. Set meta lang accordingly.",
+    "sk": "The STT language is set to Slovak. Respond in whatever language the caller is ACTUALLY speaking — even if different from Slovak. Set meta lang accordingly.",
+    "fr": "The STT language is set to French. Respond in whatever language the caller is ACTUALLY speaking — even if different from French. Set meta lang accordingly.",
+    "uk": "The STT language is set to Ukrainian. Respond in whatever language the caller is ACTUALLY speaking — even if different from Ukrainian. Set meta lang accordingly.",
+    "es": "The STT language is set to Spanish. Respond in whatever language the caller is ACTUALLY speaking — even if different from Spanish. Set meta lang accordingly.",
+    "it": "The STT language is set to Italian. Respond in whatever language the caller is ACTUALLY speaking — even if different from Italian. Set meta lang accordingly.",
+    "hi": "The STT language is set to Hindi. Respond in whatever language the caller is ACTUALLY speaking — even if different from Hindi. Set meta lang accordingly.",
 }
 
 ERROR_FALLBACKS: dict[str, str] = {
