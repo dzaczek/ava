@@ -9,8 +9,8 @@
 ```mermaid
 graph TB
     subgraph External["EXTERNAL SERVICES"]
-        Twilio["Twilio<br/>Voice / PSTN<br/>STT (Gather)<br/>Webhooks"]
-        OpenAI["OpenAI<br/>GPT-4o (conversation)<br/>TTS (fallback)"]
+        Twilio["Twilio<br/>Voice / PSTN<br/>STT (Gather)<br/>Record<br/>Webhooks"]
+        OpenAI["OpenAI<br/>GPT-4o (conversation)<br/>Whisper (STT)<br/>TTS (fallback)"]
         ElevenLabs["ElevenLabs<br/>TTS (primary voice)<br/>eleven_turbo_v2_5"]
     end
 
@@ -21,7 +21,7 @@ graph TB
         end
 
         subgraph AVA["AVA (FastAPI :8000)"]
-            Main["main.py<br/>Call routing<br/>Twilio hooks<br/>Rate limiter<br/>Audio serve<br/>Diagnostics"]
+            Main["main.py<br/>Call routing<br/>Twilio hooks<br/>Whisper async<br/>Rate limiter<br/>Audio serve"]
             Conv["conversation.py<br/>GPT-4o / Groq<br/>Streaming<br/>Meta parsing<br/>Summarizer"]
             TTS["tts.py<br/>ElevenLabs → OpenAI<br/>→ Polly (fallback)<br/>Cache (MD5)<br/>Circuit breaker"]
             Owner["owner_channel.py<br/>Signal notify<br/>Signal poll (3s)<br/>Slash commands<br/>Instructions"]
@@ -91,17 +91,24 @@ sequenceDiagram
     Note over AVA: Contact lookup (local/CNAM)<br/>Detect lang from phone prefix<br/>(+41→de-CH, +48→pl-PL)
 
     AVA-->>Signal: 📞 Incoming call notification
-    AVA->>TTS: Generate greeting TTS
-    TTS-->>AVA: MP3 audio URL
 
-    AVA->>Twilio: TwiML: Gather + Play<br/>speech_timeout=1s<br/>language=de-CH, enhanced=true
-    Twilio->>Caller: Plays greeting audio
+    alt Contact has lang override
+        AVA->>TTS: Generate greeting TTS
+        AVA->>Twilio: TwiML: Gather + Play<br/>(known language)
+        Twilio->>Caller: Plays greeting audio
+    else Unknown contact
+        AVA->>Twilio: TwiML: Record + Say<br/>"Which language do you prefer?"
+        Twilio->>Caller: Plays question audio
+        Caller->>Twilio: Speaks
+        Twilio->>AVA: POST /twilio/first_response
+        Note over AVA: OpenAI Whisper transcribes<br/>and detects actual language
+    end
 
     loop Max 10 exchanges
         Caller->>Twilio: Speaks
         Twilio->>AVA: POST /process_speech<br/>(SpeechResult, Confidence)
 
-        Note over AVA: langdetect on text<br/>Pop Signal instructions
+        Note over AVA: Pop Signal instructions
 
         opt Owner sent instruction
             Signal-->>AVA: "tell him I'll call back"
@@ -152,7 +159,7 @@ sequenceDiagram
 
 | Parameter | Value | Location | Description |
 |-----------|-------|----------|-------------|
-| `speech_timeout` | **1 s** | `main.py` (all 4 Gather calls) | Silence after speech ends before Twilio fires callback |
+| `speech_timeout` | **1 s** | `main.py` (all Gather calls) | Silence after speech ends before Twilio fires callback |
 | `enhanced` | `true` | `main.py` (Gather) | Use enhanced STT model for better accuracy |
 | LLM `max_tokens` | **180** | `conversation.py` | Max response length per turn |
 | GPT `temperature` | **0.75** | `conversation.py` | Creativity level for responses |
@@ -182,17 +189,17 @@ flowchart TD
 
     Prefix --> ContactCheck{Contact has<br/>lang override?}
     ContactCheck -->|Yes| ContactLang["Use contact language<br/>contacts.json<br/>e.g. {name: ..., lang: pl}"]
-    ContactCheck -->|No| PrefixLang["Use prefix language"]
+    ContactCheck -->|No| Record["Twilio Record<br/>Ask language preference<br/>in prefix language"]
 
     ContactLang --> Gather
-    PrefixLang --> Gather
+    Record --> Whisper["OpenAI Whisper API<br/>Transcribes audio &<br/>detects actual language"]
+
+    Whisper --> GPT
 
     Gather["Twilio STT Gather<br/>language = detected locale<br/>speech_timeout = 1s<br/>enhanced = true"]
 
     Gather --> Speech["SpeechResult (text)"]
-    Speech --> Detect["langdetect on text<br/>(if 3+ words)<br/>e.g. Dzień dobry → pl"]
-
-    Detect --> GPT["GPT-4o processes text<br/>Responds in caller's language<br/>Returns meta with lang: pl"]
+    Speech --> GPT["GPT-4o processes text<br/>Responds in caller's language<br/>Returns meta with lang: pl"]
 
     GPT --> Switch{LLM lang ≠<br/>current STT?}
     Switch -->|Yes| Update["Switch STT language<br/>for NEXT Gather<br/>e.g. de-CH → pl-PL"]
@@ -202,12 +209,14 @@ flowchart TD
     Keep --> Gather
 
     style Start fill:#059669,color:#fff
+    style Record fill:#2563eb,color:#fff
+    style Whisper fill:#7c3aed,color:#fff
     style Gather fill:#2563eb,color:#fff
     style GPT fill:#7c3aed,color:#fff
     style Switch fill:#d97706,color:#fff
 ```
 
-> **Important limitation**: Twilio STT only supports **one language per Gather**. If the caller speaks Polish but STT is set to German, the transcript will be garbled. The language switch only takes effect on the **next** turn.
+> **Important limitation**: Twilio STT only supports **one language per Gather**. If the caller speaks Polish but STT is set to German, the transcript will be garbled. The GPT model analyzes the garbled text and switches the language via the `meta` block for the **next** turn.
 
 ---
 
@@ -484,6 +493,7 @@ AVA/
 |---------|------|--------------------|
 | Twilio Voice | $0.013/min | ~$0.03 |
 | Twilio STT (enhanced) | $0.02/15s | ~$0.16 |
+| OpenAI Whisper | $0.006/min | ~$0.001 (first turn only) |
 | OpenAI GPT-4o-mini | ~$0.0006/1k tokens | ~$0.001 |
 | ElevenLabs | from $5/month | (30k chars free tier) |
 | Twilio CNAM Lookup | $0.01/query | $0.01 (unknown numbers only) |

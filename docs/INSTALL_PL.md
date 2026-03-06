@@ -377,6 +377,8 @@ Plik uzywa formatu slownikowego. Wartoscia moze byc prosta nazwa lub obiekt z `n
 
 Opcjonalne pole `lang` wymusza jezyk STT dla danego kontaktu, nadpisujac automatyczna detekcje z prefiksu telefonicznego. Przydatne gdy ktos dzwoni z zagranicznego numeru, ale mowi w innym jezyku.
 
+Podanie `lang` dla kontaktu pozwala pominąć detekcję języka przy pomocy modelu Whisper podczas pierwszej tury rozmowy. Rozmowa od razu zostanie odebrana przez AI w wybranym języku, zapewniając niższe opóźnienia.
+
 Uwagi:
 
 - **Bezposredni dostep**: kontakty z ksiazki moga dzwonic bezposrednio na numer Twilio (bez przekierowania) i AVA odbierze. Nieznani dzwoniacy musza przejsc przez przekierowanie polaczen.
@@ -536,6 +538,7 @@ Szacunkowe koszty dla typowej 2-minutowej rozmowy:
 |--------|--------|-----------------|
 | Twilio Voice | $0.013/min | ok. $0.03 |
 | Twilio STT (enhanced) | $0.02/15 s | ok. $0.16 |
+| OpenAI Whisper | $0.006/min | ok. $0.001 (tylko 1-sza tura) |
 | OpenAI GPT-4o-mini | ok. $0.0006/1k tokenow | ok. $0.001 |
 | ElevenLabs | od $5/miesiac (30 tys. znakow gratis) | -- |
 | Twilio CNAM Lookup | $0.01/zapytanie | $0.01 (tylko nieznane numery) |
@@ -646,8 +649,9 @@ AVA posiada nastepujace mechanizmy bezpieczenstwa:
 │  │     │              │                │                  │       │
 │  │  Twilio hooks    GPT-4o/Groq    ElevenLabs→OpenAI    │       │
 │  │  Rate limiter    Streaming       →Polly fallback      │       │
-│  │  Audio serwer    Meta parsing    TTS cache (MD5)      │       │
-│  │  Diagnostyka     Podsumowania    Circuit breaker      │       │
+│  │  Whisper STT     Meta parsing    TTS cache (MD5)      │       │
+│  │  Audio serwer    Podsumowania    Circuit breaker      │       │
+│  │  Diagnostyka                                           │       │
 │  │     │                                                  │       │
 │  │  owner_channel.py ─── contact_lookup.py ─── i18n.py   │       │
 │  │     │                      │                           │       │
