@@ -377,6 +377,8 @@ The file uses a dictionary format. Values can be a simple name string or an obje
 
 The optional `lang` field forces the STT language for this contact, overriding automatic phone prefix detection. Useful when someone calls from a foreign number but speaks a different language.
 
+By providing `lang` for a contact, you skip the Whisper-based language detection step on the first turn. The call will be immediately answered by the AI in the specified language, resulting in lower latency.
+
 Notes:
 
 - **Direct call access**: contacts in the contact book can call the Twilio number directly (without forwarding) and AVA will answer. Unknown callers must go through call forwarding.
@@ -538,6 +540,7 @@ Estimated costs for a typical 2-minute call:
 |---------|------|---------------|
 | Twilio Voice | $0.013/min | approx. $0.03 |
 | Twilio STT (enhanced) | $0.02/15 s | approx. $0.16 |
+| OpenAI Whisper | $0.006/min | approx. $0.001 (first turn only) |
 | OpenAI GPT-4o-mini | approx. $0.0006/1k tokens | approx. $0.001 |
 | ElevenLabs | from $5/month (30k chars free) | -- |
 | Twilio CNAM Lookup | $0.01/query | $0.01 (unknown numbers only) |
@@ -648,8 +651,9 @@ AVA includes the following security mechanisms:
 │  │     │              │                │                  │       │
 │  │  Twilio hooks    GPT-4o/Groq    ElevenLabs→OpenAI    │       │
 │  │  Rate limiter    Streaming       →Polly fallback      │       │
-│  │  Audio serve     Meta parsing    TTS cache (MD5)      │       │
-│  │  Diagnostics     Summarizer      Circuit breaker      │       │
+│  │  Whisper STT     Meta parsing    TTS cache (MD5)      │       │
+│  │  Audio serve     Summarizer      Circuit breaker      │       │
+│  │  Diagnostics                                           │       │
 │  │     │                                                  │       │
 │  │  owner_channel.py ─── contact_lookup.py ─── i18n.py   │       │
 │  │     │                      │                           │       │
