@@ -10,7 +10,7 @@
 graph TB
     subgraph External["EXTERNAL SERVICES"]
         Twilio["Twilio<br/>Voice / PSTN<br/>STT (Gather)<br/>Record<br/>Webhooks"]
-        OpenAI["OpenAI<br/>GPT-4o (conversation)<br/>Whisper (STT)<br/>TTS (fallback)"]
+        OpenAI["OpenAI<br/>GPT-4o (conversation)<br/>Whisper async<br/>TTS (fallback)"]
         ElevenLabs["ElevenLabs<br/>TTS (primary voice)<br/>eleven_turbo_v2_5"]
     end
 

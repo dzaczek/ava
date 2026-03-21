@@ -649,7 +649,7 @@ AVA posiada nastepujace mechanizmy bezpieczenstwa:
 │  │     │              │                │                  │       │
 │  │  Twilio hooks    GPT-4o/Groq    ElevenLabs→OpenAI    │       │
 │  │  Rate limiter    Streaming       →Polly fallback      │       │
-│  │  Whisper STT     Meta parsing    TTS cache (MD5)      │       │
+│  │  Whisper async   Meta parsing    TTS cache (MD5)      │       │
 │  │  Audio serwer    Podsumowania    Circuit breaker      │       │
 │  │  Diagnostyka                                           │       │
 │  │     │                                                  │       │
