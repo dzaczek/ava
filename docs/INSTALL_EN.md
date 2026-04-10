@@ -657,7 +657,7 @@ AVA includes the following security mechanisms:
 │  │     │                                                  │       │
 │  │  owner_channel.py ─── contact_lookup.py ─── i18n.py   │       │
 │  │     │                      │                           │       │
-│  │  Signal notify          contacts.json             11+ langs   │
+│  │  Signal notify          contacts.json             13+ langs   │
 │  │  Signal poll (3s)       CNAM lookup                Signal     │
 │  │  Slash commands         Lang from prefix           templates  │
 │  │  Owner instructions     Per-contact lang                      │

@@ -655,7 +655,7 @@ AVA posiada nastepujace mechanizmy bezpieczenstwa:
 │  │     │                                                  │       │
 │  │  owner_channel.py ─── contact_lookup.py ─── i18n.py   │       │
 │  │     │                      │                           │       │
-│  │  Signal powiad.         contacts.json             11+ jezykow │
+│  │  Signal powiad.         contacts.json             13+ jezykow │
 │  │  Signal poll (3s)       CNAM lookup                Signal     │
 │  │  Slash komendy          Jezyk z prefiksu           szablony   │
 │  │  Instrukcje             Per-kontakt jezyk                     │

@@ -26,7 +26,7 @@ graph TB
             TTS["tts.py<br/>ElevenLabs → OpenAI<br/>→ Polly (fallback)<br/>Cache (MD5)<br/>Circuit breaker"]
             Owner["owner_channel.py<br/>Signal notify<br/>Signal poll (3s)<br/>Slash commands<br/>Instructions"]
             Contact["contact_lookup.py<br/>contacts.json<br/>Twilio CNAM<br/>E.164 normalize<br/>Lang from prefix"]
-            I18n["i18n.py<br/>11+ languages<br/>Signal templates<br/>Polly voices<br/>Twilio codes"]
+            I18n["i18n.py<br/>13+ languages<br/>Signal templates<br/>Polly voices<br/>Twilio codes"]
         end
 
         SignalCLI["signal-cli :8080<br/>REST API<br/>Native mode<br/>Self-hosted"]
@@ -185,7 +185,7 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    Start([CALL START]) --> Prefix["Phone prefix detection<br/>+41 → de-CH<br/>+48 → pl-PL<br/>+44 → en-GB<br/>(52 prefixes)"]
+    Start([CALL START]) --> Prefix["Phone prefix detection<br/>+41 → de-CH<br/>+48 → pl-PL<br/>+44 → en-GB<br/>(54 prefixes)"]
 
     Prefix --> ContactCheck{Contact has<br/>lang override?}
     ContactCheck -->|Yes| ContactLang["Use contact language<br/>contacts.json<br/>e.g. {name: ..., lang: pl}"]
