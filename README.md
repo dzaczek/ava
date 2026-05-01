@@ -26,7 +26,7 @@ graph TB
             TTS["tts.py<br/>ElevenLabs → OpenAI<br/>→ Polly (fallback)<br/>Cache (MD5)<br/>Circuit breaker"]
             Owner["owner_channel.py<br/>Signal notify<br/>Signal poll (3s)<br/>Slash commands<br/>Instructions"]
             Contact["contact_lookup.py<br/>contacts.json<br/>Twilio CNAM<br/>E.164 normalize<br/>Lang from prefix"]
-            I18n["i18n.py<br/>11+ languages<br/>Signal templates<br/>Polly voices<br/>Twilio codes"]
+            I18n["i18n.py<br/>13+ languages<br/>Signal templates<br/>Polly voices<br/>Twilio codes"]
         end
 
         SignalCLI["signal-cli :8080<br/>REST API<br/>Native mode<br/>Self-hosted"]
@@ -106,7 +106,7 @@ sequenceDiagram
 
     loop Max 10 exchanges
         Caller->>Twilio: Speaks
-        Twilio->>AVA: POST /process_speech<br/>(SpeechResult, Confidence)
+        Twilio->>AVA: POST /twilio/process_speech/{call_sid}<br/>(SpeechResult, Confidence)
 
         Note over AVA: Pop Signal instructions
 
@@ -454,7 +454,7 @@ AVA/
 │   ├── tts.py               # TTS provider chain (ElevenLabs → OpenAI → Polly)
 │   ├── owner_channel.py     # Signal notifications, polling, slash commands
 │   ├── contact_lookup.py    # Contact book + Twilio CNAM + language from prefix
-│   └── i18n.py              # Multilingual strings, voice maps, Signal templates
+│   └── i18n.py              # 13+ languages, multilingual strings, voice maps, Signal templates
 ├── data/
 │   ├── contacts.json        # (user-created) Phone contact book
 │   └── calls/               # (auto-generated) JSON call records
