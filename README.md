@@ -11,7 +11,7 @@ graph TB
     subgraph External["EXTERNAL SERVICES"]
         Twilio["Twilio<br/>Voice / PSTN<br/>STT (Gather)<br/>Record<br/>Webhooks"]
         OpenAI["OpenAI<br/>GPT-4o (conversation)<br/>Whisper async<br/>TTS (fallback)"]
-        ElevenLabs["ElevenLabs<br/>TTS (primary voice)<br/>eleven_turbo_v2_5"]
+        ElevenLabs["ElevenLabs<br/>TTS (primary voice)<br/>eleven_multilingual_v2"]
     end
 
     subgraph Docker["DOCKER HOST (your server)"]
@@ -26,7 +26,7 @@ graph TB
             TTS["tts.py<br/>ElevenLabs → OpenAI<br/>→ Polly (fallback)<br/>Cache (MD5)<br/>Circuit breaker"]
             Owner["owner_channel.py<br/>Signal notify<br/>Signal poll (3s)<br/>Slash commands<br/>Instructions"]
             Contact["contact_lookup.py<br/>contacts.json<br/>Twilio CNAM<br/>E.164 normalize<br/>Lang from prefix"]
-            I18n["i18n.py<br/>11+ languages<br/>Signal templates<br/>Polly voices<br/>Twilio codes"]
+            I18n["i18n.py<br/>13+ languages<br/>Signal templates<br/>Polly voices<br/>Twilio codes"]
         end
 
         SignalCLI["signal-cli :8080<br/>REST API<br/>Native mode<br/>Self-hosted"]
@@ -106,7 +106,7 @@ sequenceDiagram
 
     loop Max 10 exchanges
         Caller->>Twilio: Speaks
-        Twilio->>AVA: POST /process_speech<br/>(SpeechResult, Confidence)
+        Twilio->>AVA: POST /twilio/process_speech<br/>(SpeechResult, Confidence)
 
         Note over AVA: Pop Signal instructions
 
