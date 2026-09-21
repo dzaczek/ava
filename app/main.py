@@ -128,6 +128,7 @@ _last_call_timings: list[dict] = []  # circular buffer, max 10
 GPT4O_INPUT  = 2.50 / 1_000_000   # $/token
 GPT4O_OUTPUT = 10.0 / 1_000_000   # $/token
 ELEVENLABS   = 0.30 / 1_000       # $/char
+SIXTYDB      = 0.02 / 1_000       # $/char ($0.00002/char)
 OPENAI_TTS   = 0.015 / 1_000      # $/char
 TWILIO_VOICE = 0.02               # $/min (approx)
 TWILIO_STT   = 0.08               # $/min (enhanced)
@@ -138,6 +139,7 @@ _total_usage: dict[str, float] = {
     "summary_prompt_tokens": 0,
     "summary_completion_tokens": 0,
     "tts_elevenlabs_chars": 0,
+    "tts_sixtydb_chars": 0,
     "tts_openai_chars": 0,
     "twilio_minutes": 0.0,
 }
@@ -146,7 +148,7 @@ def _empty_call_usage() -> dict:
     return {
         "gpt_prompt_tokens": 0, "gpt_completion_tokens": 0,
         "summary_prompt_tokens": 0, "summary_completion_tokens": 0,
-        "tts_elevenlabs_chars": 0, "tts_openai_chars": 0,
+        "tts_elevenlabs_chars": 0, "tts_sixtydb_chars": 0, "tts_openai_chars": 0,
         "twilio_minutes": 0.0,
     }
 
@@ -158,6 +160,7 @@ def _compute_cost(u: dict) -> float:
         gpt_in * GPT4O_INPUT
         + gpt_out * GPT4O_OUTPUT
         + u.get("tts_elevenlabs_chars", 0) * ELEVENLABS
+        + u.get("tts_sixtydb_chars", 0) * SIXTYDB
         + u.get("tts_openai_chars", 0) * OPENAI_TTS
         + twilio_min * TWILIO_VOICE
         + twilio_min * TWILIO_STT
@@ -319,12 +322,22 @@ def _register_slash_commands():
         tts_size = sum(f.stat().st_size for f in tts_files) / (1024 * 1024)
         lines.append(f"TTS cache: {len(tts_files)} files ({tts_size:.1f} MB)")
 
+        # Primary TTS provider
+        lines.append(f"TTS provider: {tts.tts_provider}")
+
         # ElevenLabs circuit breaker
         el_remaining = tts._elevenlabs_disabled_until - time.monotonic()
         if el_remaining > 0:
             lines.append(f"ElevenLabs: ⚠️ disabled ({int(el_remaining)}s remaining)")
         else:
             lines.append(f"ElevenLabs: ✅ active" if tts.elevenlabs_key else "ElevenLabs: ❌ no key")
+
+        # 60db circuit breaker
+        db_remaining = tts._sixtydb_disabled_until - time.monotonic()
+        if db_remaining > 0:
+            lines.append(f"60db: ⚠️ disabled ({int(db_remaining)}s remaining)")
+        else:
+            lines.append(f"60db: ✅ active" if tts.sixtydb_key else "60db: ❌ no key")
 
         # Stats
         lines.append(f"Total calls: {_call_count}")
@@ -370,15 +383,17 @@ def _register_slash_commands():
         gpt_out = u["gpt_completion_tokens"] + u["summary_completion_tokens"]
         gpt_cost = gpt_in * GPT4O_INPUT + gpt_out * GPT4O_OUTPUT
         el_cost = u["tts_elevenlabs_chars"] * ELEVENLABS
+        db_cost = u["tts_sixtydb_chars"] * SIXTYDB
         oai_tts_cost = u["tts_openai_chars"] * OPENAI_TTS
         twilio_cost = u["twilio_minutes"] * (TWILIO_VOICE + TWILIO_STT)
-        total = gpt_cost + el_cost + oai_tts_cost + twilio_cost
+        total = gpt_cost + el_cost + db_cost + oai_tts_cost + twilio_cost
 
         lines.append("")
         lines.append("API Usage (session)")
         lines.append("───────────────────")
         lines.append(f"GPT-4o: {gpt_in + gpt_out} tok (${gpt_cost:.4f})")
         lines.append(f"ElevenLabs TTS: {u['tts_elevenlabs_chars']} chars (${el_cost:.4f})")
+        lines.append(f"60db TTS: {u['tts_sixtydb_chars']} chars (${db_cost:.4f})")
         lines.append(f"OpenAI TTS: {u['tts_openai_chars']} chars (${oai_tts_cost:.4f})")
         lines.append(f"Twilio: {u['twilio_minutes']:.1f} min (${twilio_cost:.4f})")
         lines.append(f"Total est: ${total:.4f}")
@@ -1173,7 +1188,7 @@ async def process_speech(
     tts_first = round((_tts_first_end - _tts_first_start), 3) if _tts_first_start and _tts_first_end else 0
     tts_rest = round((_tts_rest_end - _tts_rest_start), 3) if len(sentences) > 1 else 0
     tts_total = round(sum(t["latency"] for t in tts_timings), 3) if tts_timings else 0
-    tts_provider = tts_timings[0]["provider"] if tts_timings else ("elevenlabs" if tts.elevenlabs_key else "openai_tts")
+    tts_provider = tts_timings[0]["provider"] if tts_timings else tts.primary_label()
 
     transcript = active_calls.get(call_sid, {}).get("transcript", [])
 
@@ -1435,6 +1450,7 @@ async def _send_final_summary(call_sid: str):
 
     tts_usage = tts.get_usage(call_sid)
     u["tts_elevenlabs_chars"] += tts_usage.get("elevenlabs_chars", 0)
+    u["tts_sixtydb_chars"] += tts_usage.get("sixtydb_chars", 0)
     u["tts_openai_chars"] += tts_usage.get("openai_chars", 0)
     u["estimated_cost"] = _compute_cost(u)
 

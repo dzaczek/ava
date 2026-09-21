@@ -13,7 +13,8 @@ graph TB
     subgraph External["EXTERNAL SERVICES"]
         Twilio["Twilio<br/>Voice / PSTN<br/>STT (Gather)<br/>Record<br/>Webhooks"]
         OpenAI["OpenAI<br/>GPT-4o (conversation)<br/>Whisper async<br/>TTS (fallback)"]
-        ElevenLabs["ElevenLabs<br/>TTS (primary voice)<br/>eleven_turbo_v2_5"]
+        ElevenLabs["ElevenLabs<br/>TTS (premium voice)<br/>eleven_multilingual_v2"]
+        SixtyDB["60db.ai<br/>TTS (premium voice)<br/>/tts-synthesize"]
     end
 
     subgraph Docker["DOCKER HOST (your server)"]
@@ -25,7 +26,7 @@ graph TB
         subgraph AVA["AVA (FastAPI :8000)"]
             Main["main.py<br/>Call routing<br/>Twilio hooks<br/>Whisper async<br/>Rate limiter<br/>Audio serve"]
             Conv["conversation.py<br/>GPT-4o / Groq<br/>Streaming<br/>Meta parsing<br/>Summarizer"]
-            TTS["tts.py<br/>ElevenLabs → OpenAI<br/>→ Polly (fallback)<br/>Cache (MD5)<br/>Circuit breaker"]
+            TTS["tts.py<br/>ElevenLabs / 60db → OpenAI<br/>→ Polly (fallback)<br/>Cache (MD5)<br/>Circuit breaker"]
             Owner["owner_channel.py<br/>Signal notify<br/>Signal poll (3s)<br/>Slash commands<br/>Instructions"]
             Contact["contact_lookup.py<br/>contacts.json<br/>Twilio CNAM<br/>E.164 normalize<br/>Lang from prefix"]
             I18n["i18n.py<br/>11+ languages<br/>Signal templates<br/>Polly voices<br/>Twilio codes"]
@@ -57,6 +58,7 @@ graph TB
 
     Conv -->|"HTTPS"| OpenAI
     TTS -->|"HTTPS"| ElevenLabs
+    TTS -->|"HTTPS"| SixtyDB
     TTS -->|"HTTPS"| OpenAI
 
     Owner -->|"HTTP (ava-net)"| SignalCLI
@@ -84,7 +86,7 @@ sequenceDiagram
     participant Twilio as Twilio (PSTN + STT)
     participant AVA as AVA Server
     participant GPT as LLM (GPT-4o / Groq)
-    participant TTS as ElevenLabs / OpenAI TTS
+    participant TTS as ElevenLabs / 60db / OpenAI TTS
     participant Signal as Owner (Signal)
 
     Caller->>Twilio: Dials owner (call forwarded)
@@ -170,8 +172,8 @@ sequenceDiagram
 | Context window | **last 20 messages** | `conversation.py` | Sliding window of conversation history |
 | Hard turn limit | **10 exchanges** | `conversation.py` | AVA wraps up after 10 user turns |
 | Wrap-up warning | **8+ exchanges** | `conversation.py` | System prompt warns AVA to end soon |
-| ElevenLabs timeout | **15 s** | `tts.py` (httpx) | HTTP timeout for TTS API |
-| ElevenLabs circuit breaker | **10 min** | `tts.py` | Disable after 401/403/429, auto-reset |
+| TTS timeout | **15 s** | `tts.py` (httpx) | HTTP timeout shared by all TTS providers |
+| TTS circuit breaker | **10 min** | `tts.py` | Per provider (ElevenLabs, 60db): disable after 401/403/429, auto-reset |
 | Signal poll interval | **3 s** | `main.py` / `owner_channel.py` | How often AVA checks for new Signal messages |
 | Signal HTTP timeout | **10 s** | `owner_channel.py` (httpx) | Timeout for Signal API calls |
 | CNAM lookup timeout | **5 s** | `contact_lookup.py` (httpx) | Twilio CNAM API timeout |
@@ -229,30 +231,35 @@ flowchart TD
     Input["Text to speak"] --> Cache{Disk cache hit?<br/>key = MD5 lang:text}
 
     Cache -->|Yes| Serve["Return cached URL<br/>PUBLIC_URL/audio/hash.mp3"]
-    Cache -->|No| ELCheck{ElevenLabs<br/>available?<br/>API key set?<br/>Circuit breaker OK?}
+    Cache -->|No| Chain{"Provider chain<br/>(TTS_PROVIDER selects primary)<br/>elevenlabs / sixtydb / openai"}
 
-    ELCheck -->|Yes| EL["ElevenLabs API<br/>voice_id (env)<br/>model_id (env)<br/>timeout: 15s"]
-    ELCheck -->|No| OpenAI
+    Chain --> P1["Provider 1 (primary)<br/>key set? breaker OK?"]
+    P1 -->|Success| Save["Save to cache<br/>Return URL"]
+    P1 -->|"Fail / disabled"| P2["Provider 2 (other premium)"]
 
-    EL -->|Success| Save["Save to cache<br/>Return URL"]
-    EL -->|Fail| OpenAI["OpenAI TTS<br/>model: tts-1<br/>voice: OPENAI_TTS_VOICE<br/>(default: nova)"]
+    P2 -->|Success| Save
+    P2 -->|"Fail / disabled"| OpenAI["OpenAI TTS<br/>model: tts-1<br/>voice: OPENAI_TTS_VOICE<br/>(default: nova)"]
 
     OpenAI -->|Success| Save
     OpenAI -->|Fail| Polly["Twilio Say (Polly)<br/>Last resort<br/>Built-in voice"]
 
-    EL -->|"401/403/429"| CB["Circuit Breaker<br/>Disable ElevenLabs<br/>for 10 minutes"]
+    P1 -->|"401/403/429"| CB["Per-provider Circuit Breaker<br/>Disable that provider<br/>for 10 minutes"]
+    P2 -->|"401/403/429"| CB
     CB --> OpenAI
 
     Save --> Done([Audio URL returned])
     Polly --> Done2([TwiML Say fallback])
 
     style Input fill:#2563eb,color:#fff
-    style EL fill:#7c3aed,color:#fff
+    style P1 fill:#7c3aed,color:#fff
+    style P2 fill:#7c3aed,color:#fff
     style OpenAI fill:#059669,color:#fff
     style Polly fill:#dc2626,color:#fff
     style CB fill:#d97706,color:#fff
     style Done fill:#059669,color:#fff
 ```
+
+**ElevenLabs** (raw MP3 body) and **60db.ai** (`POST /tts-synthesize`, JSON `audio_base64` decoded to MP3) are interchangeable premium providers. `TTS_PROVIDER` picks which one is tried first; the other becomes the next fallback before OpenAI. Each has an independent 10-minute circuit breaker.
 
 ---
 
@@ -412,10 +419,18 @@ graph LR
 | `LLM_MODEL` | auto | Model name (default: `gpt-4o-mini` for OpenAI, `llama-3.3-70b-versatile` for Groq) |
 | `LLM_SUMMARY_MODEL` | auto | Model for call summaries (default: same as `LLM_MODEL`) |
 | `GROQ_API_KEY` | (empty) | Groq API key (required when `LLM_PROVIDER=groq`) |
+| **TTS** | | |
+| `TTS_PROVIDER` | `elevenlabs` | Primary TTS provider: `elevenlabs`, `sixtydb`, or `openai`. Chain always falls through to OpenAI → Polly. |
 | **ElevenLabs** | | |
 | `ELEVENLABS_API_KEY` | (empty) | Leave blank to skip ElevenLabs |
 | `ELEVENLABS_VOICE_ID` | `WAhoMTNdLdMoq1j3wf3I` | Single multilingual voice ID |
 | `ELEVENLABS_MODEL` | `eleven_multilingual_v2` | TTS model (`eleven_turbo_v2_5` for lower latency) |
+| **60db.ai** | | |
+| `SIXTYDB_API_KEY` | (empty) | Leave blank to skip 60db |
+| `SIXTYDB_VOICE_ID` | `fbb75ed2-975a-40c7-9e06-38e30524a9a1` | Voice ID (list via `GET /myvoices`) |
+| `SIXTYDB_SPEED` | `1` | Speech speed, 0.5–2.0 |
+| `SIXTYDB_STABILITY` | `50` | Expressiveness vs. consistency, 0–100 |
+| `SIXTYDB_SIMILARITY` | `75` | Source-voice matching, 0–100 |
 | **OpenAI TTS** | | |
 | `OPENAI_TTS_VOICE` | `nova` | Fallback voice (alloy/echo/fable/onyx/nova/shimmer) |
 | **Language** | | |
@@ -453,7 +468,7 @@ AVA/
 ├── app/
 │   ├── main.py              # FastAPI app, call routing, webhooks, diagnostics
 │   ├── conversation.py      # GPT-4o conversation loop, streaming, meta parsing
-│   ├── tts.py               # TTS provider chain (ElevenLabs → OpenAI → Polly)
+│   ├── tts.py               # TTS provider chain (ElevenLabs / 60db → OpenAI → Polly)
 │   ├── owner_channel.py     # Signal notifications, polling, slash commands
 │   ├── contact_lookup.py    # Contact book + Twilio CNAM + language from prefix
 │   └── i18n.py              # Multilingual strings, voice maps, Signal templates
@@ -497,7 +512,8 @@ AVA/
 | Twilio STT (enhanced) | $0.02/15s | ~$0.16 |
 | OpenAI Whisper | $0.006/min | ~$0.001 (first turn only) |
 | OpenAI GPT-4o-mini | ~$0.0006/1k tokens | ~$0.001 |
-| ElevenLabs | from $5/month | (30k chars free tier) |
+| ElevenLabs (TTS, optional) | from $5/month | (30k chars free tier) |
+| 60db.ai (TTS, optional) | $0.00002/char | ~$0.01 ($0.01 min per request) |
 | Twilio CNAM Lookup | $0.01/query | $0.01 (unknown numbers only) |
 
 **Typical call: ~$0.20–0.25** (with GPT-4o-mini costs are significantly lower)
