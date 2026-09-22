@@ -21,7 +21,12 @@ services:
 
       # OpenAI
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
+
+      # LLM Provider
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
+      - LLM_SUMMARY_MODEL=${LLM_SUMMARY_MODEL:-gpt-4o-mini}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
 
       # ElevenLabs TTS (optional – falls back to OpenAI TTS then Twilio Polly)
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
