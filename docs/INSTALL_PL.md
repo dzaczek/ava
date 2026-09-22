@@ -117,6 +117,13 @@ Ponizej opis kazdej zmiennej:
 |---------|------|---------|
 | `ELEVENLABS_API_KEY` | Klucz API ElevenLabs. Pozostaw pusty, aby uzyc OpenAI TTS. | (pusty lub klucz) |
 | `ELEVENLABS_VOICE_ID` | Wielojezyczny identyfikator glosu (jeden dla wszystkich jezykow). | `WAhoMTNdLdMoq1j3wf3I` |
+| `ELEVENLABS_VOICE_PL` | Identyfikator glosu dla jezyka polskiego | `pNInz6obpgDQGcFmaJgB` |
+| `ELEVENLABS_VOICE_EN` | Identyfikator glosu dla jezyka angielskiego | `EXAVITQu4vr4xnSDxMaL` |
+| `ELEVENLABS_VOICE_DE` | Identyfikator glosu dla jezyka niemieckiego | `pNInz6obpgDQGcFmaJgB` |
+| `ELEVENLABS_VOICE_FR` | Identyfikator glosu dla jezyka francuskiego | `pNInz6obpgDQGcFmaJgB` |
+| `ELEVENLABS_VOICE_IT` | Identyfikator glosu dla jezyka wloskiego | `pNInz6obpgDQGcFmaJgB` |
+| `ELEVENLABS_VOICE_HI` | Identyfikator glosu dla jezyka hindi | `pNInz6obpgDQGcFmaJgB` |
+| `ELEVENLABS_VOICE_DEFAULT` | Domyslny identyfikator glosu | `pNInz6obpgDQGcFmaJgB` |
 | `ELEVENLABS_MODEL` | Model ElevenLabs. `eleven_multilingual_v2` (najlepsza jakosc) lub `eleven_turbo_v2_5` (szybszy, nizsza latencja). | `eleven_turbo_v2_5` |
 | `OPENAI_TTS_VOICE` | Zapasowy glos OpenAI TTS: alloy, echo, fable, onyx, nova, shimmer. | `nova` |
 
@@ -137,6 +144,7 @@ Ponizej opis kazdej zmiennej:
 
 | Zmienna | Opis | Przyklad |
 |---------|------|---------|
+| `CONTACTS_FILE_PATH` | Sciezka do pliku kontaktow | `/data/contacts.json` |
 | `COMPOSE_PROFILES` | Profil Docker Compose okreslajacy sposob dostepu z internetu. `caddy` = Caddy + Let's Encrypt, `tunnel` = Cloudflare Tunnel. | `caddy` |
 | `PUBLIC_URL` | Publiczny adres HTTPS, pod ktorym serwer jest dostepny z internetu. | `https://ava.twoja-domena.pl` |
 | `DOMAIN` | Nazwa domeny (bez https://). Uzywana przez Caddy do uzyskania certyfikatu SSL. Wymagana tylko przy profilu `caddy`. | `ava.twoja-domena.pl` |

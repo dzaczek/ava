@@ -117,6 +117,13 @@ Below is a description of each variable:
 |----------|-------------|---------|
 | `ELEVENLABS_API_KEY` | ElevenLabs API key. Leave blank to skip ElevenLabs. | (blank or key) |
 | `ELEVENLABS_VOICE_ID` | Single multilingual voice ID (used for all languages). Browse at https://elevenlabs.io/voice-library | `WAhoMTNdLdMoq1j3wf3I` |
+| `ELEVENLABS_VOICE_PL` | Voice ID for Polish language | `pNInz6obpgDQGcFmaJgB` |
+| `ELEVENLABS_VOICE_EN` | Voice ID for English language | `EXAVITQu4vr4xnSDxMaL` |
+| `ELEVENLABS_VOICE_DE` | Voice ID for German language | `pNInz6obpgDQGcFmaJgB` |
+| `ELEVENLABS_VOICE_FR` | Voice ID for French language | `pNInz6obpgDQGcFmaJgB` |
+| `ELEVENLABS_VOICE_IT` | Voice ID for Italian language | `pNInz6obpgDQGcFmaJgB` |
+| `ELEVENLABS_VOICE_HI` | Voice ID for Hindi language | `pNInz6obpgDQGcFmaJgB` |
+| `ELEVENLABS_VOICE_DEFAULT` | Default voice ID | `pNInz6obpgDQGcFmaJgB` |
 | `ELEVENLABS_MODEL` | ElevenLabs model. `eleven_multilingual_v2` (best quality) or `eleven_turbo_v2_5` (faster, lower latency). | `eleven_turbo_v2_5` |
 | `OPENAI_TTS_VOICE` | Fallback OpenAI TTS voice (used when ElevenLabs is unavailable). Options: alloy, echo, fable, onyx, nova, shimmer. | `nova` |
 
@@ -137,6 +144,7 @@ Below is a description of each variable:
 
 | Variable | Description | Example |
 |----------|-------------|---------|
+| `CONTACTS_FILE_PATH` | Path to the contacts file | `/data/contacts.json` |
 | `COMPOSE_PROFILES` | Docker Compose profile controlling the ingress method. `caddy` = Caddy + Let's Encrypt, `tunnel` = Cloudflare Tunnel. | `caddy` |
 | `PUBLIC_URL` | The public HTTPS address where the server is reachable from the internet. | `https://ava.your-domain.com` |
 | `DOMAIN` | The domain name (without https://). Used by Caddy to obtain an SSL certificate. Required only with the `caddy` profile. | `ava.your-domain.com` |

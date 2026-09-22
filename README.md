@@ -415,6 +415,13 @@ graph LR
 | **ElevenLabs** | | |
 | `ELEVENLABS_API_KEY` | (empty) | Leave blank to skip ElevenLabs |
 | `ELEVENLABS_VOICE_ID` | `WAhoMTNdLdMoq1j3wf3I` | Single multilingual voice ID |
+| `ELEVENLABS_VOICE_PL` | `pNInz6obpgDQGcFmaJgB` | Voice ID for Polish language |
+| `ELEVENLABS_VOICE_EN` | `EXAVITQu4vr4xnSDxMaL` | Voice ID for English language |
+| `ELEVENLABS_VOICE_DE` | `pNInz6obpgDQGcFmaJgB` | Voice ID for German language |
+| `ELEVENLABS_VOICE_FR` | `pNInz6obpgDQGcFmaJgB` | Voice ID for French language |
+| `ELEVENLABS_VOICE_IT` | `pNInz6obpgDQGcFmaJgB` | Voice ID for Italian language |
+| `ELEVENLABS_VOICE_HI` | `pNInz6obpgDQGcFmaJgB` | Voice ID for Hindi language |
+| `ELEVENLABS_VOICE_DEFAULT` | `pNInz6obpgDQGcFmaJgB` | Default voice ID |
 | `ELEVENLABS_MODEL` | `eleven_multilingual_v2` | TTS model (`eleven_turbo_v2_5` for lower latency) |
 | **OpenAI TTS** | | |
 | `OPENAI_TTS_VOICE` | `nova` | Fallback voice (alloy/echo/fable/onyx/nova/shimmer) |
@@ -423,6 +430,7 @@ graph LR
 | **Persona** | | |
 | `OWNER_CONTEXT` | (built-in default) | Assistant persona + owner info (single line, private) |
 | **Infrastructure** | | |
+| `CONTACTS_FILE_PATH` | `/data/contacts.json` | Path to the contacts file |
 | `PUBLIC_URL` | (required) | HTTPS URL for Twilio to fetch TTS audio |
 | `COMPOSE_PROFILES` | `caddy` | `caddy` or `tunnel` |
 | `DOMAIN` | `localhost` | Domain for Caddy SSL (caddy profile only) |
