@@ -105,7 +105,6 @@ Below is a description of each variable:
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `OPENAI_API_KEY` | Your OpenAI API key. | `sk-proj-...` |
-| `OPENAI_MODEL` | _(deprecated, use LLM_MODEL)_ GPT model for conversations. | `gpt-4o` |
 | `LLM_PROVIDER` | LLM backend: `openai` (default) or `groq`. | `openai` |
 | `LLM_MODEL` | Model name. Default: `gpt-4o-mini` (OpenAI), `llama-3.3-70b-versatile` (Groq). | `gpt-4o-mini` |
 | `LLM_SUMMARY_MODEL` | Model for call summaries. Defaults to `LLM_MODEL`. | `gpt-4o-mini` |
@@ -629,8 +628,8 @@ AVA includes the following security mechanisms:
 ┌─────────────────────────────────────────────────────────────────┐
 │                       EXTERNAL SERVICES                         │
 │  ┌──────────┐      ┌───────────┐      ┌──────────────┐         │
-│  │  Twilio   │      │  OpenAI   │      │  ElevenLabs  │         │
-│  │ Voice/STT │      │  GPT-4o   │      │  TTS (voice) │         │
+│  │  Twilio   │      │OpenAI/Groq│      │  ElevenLabs  │         │
+│  │ Voice/STT │      │GPT-4o/Groq│      │  TTS (voice) │         │
 │  └─────┬─────┘      │  TTS fbk  │      └──────┬───────┘         │
 │        │            └─────┬─────┘             │                 │
 └────────┼──────────────────┼───────────────────┼─────────────────┘

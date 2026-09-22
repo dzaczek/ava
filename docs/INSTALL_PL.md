@@ -105,7 +105,6 @@ Ponizej opis kazdej zmiennej:
 | Zmienna | Opis | Przyklad |
 |---------|------|---------|
 | `OPENAI_API_KEY` | Klucz API OpenAI. | `sk-proj-...` |
-| `OPENAI_MODEL` | _(przestarzale, uzyj LLM_MODEL)_ Model GPT do rozmow. | `gpt-4o` |
 | `LLM_PROVIDER` | Backend LLM: `openai` (domyslnie) lub `groq`. | `openai` |
 | `LLM_MODEL` | Nazwa modelu. Domyslnie: `gpt-4o-mini` (OpenAI), `llama-3.3-70b-versatile` (Groq). | `gpt-4o-mini` |
 | `LLM_SUMMARY_MODEL` | Model do podsumowania rozmow. Domyslnie taki sam jak `LLM_MODEL`. | `gpt-4o-mini` |
@@ -627,8 +626,8 @@ AVA posiada nastepujace mechanizmy bezpieczenstwa:
 ┌─────────────────────────────────────────────────────────────────┐
 │                       USLUGI ZEWNETRZNE                         │
 │  ┌──────────┐      ┌───────────┐      ┌──────────────┐         │
-│  │  Twilio   │      │  OpenAI   │      │  ElevenLabs  │         │
-│  │ Voice/STT │      │  GPT-4o   │      │  TTS (glos)  │         │
+│  │  Twilio   │      │OpenAI/Groq│      │  ElevenLabs  │         │
+│  │ Voice/STT │      │GPT-4o/Groq│      │  TTS (glos)  │         │
 │  └─────┬─────┘      │  TTS zap. │      └──────┬───────┘         │
 │        │            └─────┬─────┘             │                 │
 └────────┼──────────────────┼───────────────────┼─────────────────┘
