@@ -105,7 +105,6 @@ Ponizej opis kazdej zmiennej:
 | Zmienna | Opis | Przyklad |
 |---------|------|---------|
 | `OPENAI_API_KEY` | Klucz API OpenAI. | `sk-proj-...` |
-| `OPENAI_MODEL` | _(przestarzale, uzyj LLM_MODEL)_ Model GPT do rozmow. | `gpt-4o` |
 | `LLM_PROVIDER` | Backend LLM: `openai` (domyslnie) lub `groq`. | `openai` |
 | `LLM_MODEL` | Nazwa modelu. Domyslnie: `gpt-4o-mini` (OpenAI), `llama-3.3-70b-versatile` (Groq). | `gpt-4o-mini` |
 | `LLM_SUMMARY_MODEL` | Model do podsumowania rozmow. Domyslnie taki sam jak `LLM_MODEL`. | `gpt-4o-mini` |
@@ -119,6 +118,12 @@ Ponizej opis kazdej zmiennej:
 | `ELEVENLABS_VOICE_ID` | Wielojezyczny identyfikator glosu (jeden dla wszystkich jezykow). | `WAhoMTNdLdMoq1j3wf3I` |
 | `ELEVENLABS_MODEL` | Model ElevenLabs. `eleven_multilingual_v2` (najlepsza jakosc) lub `eleven_turbo_v2_5` (szybszy, nizsza latencja). | `eleven_turbo_v2_5` |
 | `OPENAI_TTS_VOICE` | Zapasowy glos OpenAI TTS: alloy, echo, fable, onyx, nova, shimmer. | `nova` |
+
+#### Sciezki plikow
+
+| Zmienna | Opis | Przyklad |
+|---------|------|---------|
+| `CONTACTS_FILE_PATH` | Sciezka do pliku JSON z kontaktami. Domyslnie `/data/contacts.json`. | `/data/contacts.json` |
 
 #### Personalizacja
 

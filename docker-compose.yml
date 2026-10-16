@@ -19,9 +19,14 @@ services:
       - SIGNAL_SENDER_NUMBER=${SIGNAL_SENDER_NUMBER}   # bot number registered in signal-cli
       - SIGNAL_RECIPIENT=${SIGNAL_RECIPIENT}            # your personal Signal number
 
+      # LLM Provider
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - LLM_MODEL=${LLM_MODEL:-}
+      - LLM_SUMMARY_MODEL=${LLM_SUMMARY_MODEL:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+
       # OpenAI
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
 
       # ElevenLabs TTS (optional – falls back to OpenAI TTS then Twilio Polly)
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
@@ -40,6 +45,9 @@ services:
 
       # Public HTTPS URL Twilio uses to fetch TTS audio files
       - PUBLIC_URL=${PUBLIC_URL}
+
+      # Contact Book Path
+      - CONTACTS_FILE_PATH=${CONTACTS_FILE_PATH:-/data/contacts.json}
 
     volumes:
       - ./data:/data               # place contacts.json here

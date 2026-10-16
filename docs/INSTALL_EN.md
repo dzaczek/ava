@@ -105,7 +105,6 @@ Below is a description of each variable:
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `OPENAI_API_KEY` | Your OpenAI API key. | `sk-proj-...` |
-| `OPENAI_MODEL` | _(deprecated, use LLM_MODEL)_ GPT model for conversations. | `gpt-4o` |
 | `LLM_PROVIDER` | LLM backend: `openai` (default) or `groq`. | `openai` |
 | `LLM_MODEL` | Model name. Default: `gpt-4o-mini` (OpenAI), `llama-3.3-70b-versatile` (Groq). | `gpt-4o-mini` |
 | `LLM_SUMMARY_MODEL` | Model for call summaries. Defaults to `LLM_MODEL`. | `gpt-4o-mini` |
@@ -119,6 +118,12 @@ Below is a description of each variable:
 | `ELEVENLABS_VOICE_ID` | Single multilingual voice ID (used for all languages). Browse at https://elevenlabs.io/voice-library | `WAhoMTNdLdMoq1j3wf3I` |
 | `ELEVENLABS_MODEL` | ElevenLabs model. `eleven_multilingual_v2` (best quality) or `eleven_turbo_v2_5` (faster, lower latency). | `eleven_turbo_v2_5` |
 | `OPENAI_TTS_VOICE` | Fallback OpenAI TTS voice (used when ElevenLabs is unavailable). Options: alloy, echo, fable, onyx, nova, shimmer. | `nova` |
+
+#### File Paths
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `CONTACTS_FILE_PATH` | Path to the contacts JSON file. Default is `/data/contacts.json`. | `/data/contacts.json` |
 
 #### Personalisation
 
