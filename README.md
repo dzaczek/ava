@@ -28,7 +28,7 @@ graph TB
             TTS["tts.py<br/>ElevenLabs → OpenAI<br/>→ Polly (fallback)<br/>Cache (MD5)<br/>Circuit breaker"]
             Owner["owner_channel.py<br/>Signal notify<br/>Signal poll (3s)<br/>Slash commands<br/>Instructions"]
             Contact["contact_lookup.py<br/>contacts.json<br/>Twilio CNAM<br/>E.164 normalize<br/>Lang from prefix"]
-            I18n["i18n.py<br/>11+ languages<br/>Signal templates<br/>Polly voices<br/>Twilio codes"]
+            I18n["i18n.py<br/>13+ languages<br/>Signal templates<br/>Polly voices<br/>Twilio codes"]
         end
 
         SignalCLI["signal-cli :8080<br/>REST API<br/>Native mode<br/>Self-hosted"]
@@ -427,6 +427,7 @@ graph LR
 | `COMPOSE_PROFILES` | `caddy` | `caddy` or `tunnel` |
 | `DOMAIN` | `localhost` | Domain for Caddy SSL (caddy profile only) |
 | `CLOUDFLARE_TUNNEL_TOKEN` | (empty) | Tunnel token (tunnel profile only) |
+| `CONTACTS_FILE_PATH` | `/data/contacts.json` | Path to contacts file |
 
 ---
 
